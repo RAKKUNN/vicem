@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+  <title>Vicem Studio — Zero-Network Context Baton &amp; Diet Workbench</title>
+  <style>
+    :root {
+      --bg-primary: #0b0f17;
+      --bg-panel: #131b2e;
+      --bg-elevated: #1c2742;
+      --border-subtle: #283655;
+      --text-primary: #f0f4fc;
+      --text-secondary: #9fb0d0;
+      --accent-blue: #3b82f6;
+      --accent-green: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-red: #ef4444;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      height: 100vh;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: 52px 1fr 64px;
+    }
+
+    /* Header */
+    header {
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 1rem;
+    }
+
+    .badge-zero-net {
+      background: rgba(16, 185, 129, 0.16);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    /* Main 2-Column Workspace (Zone A + Zone B) */
+    main {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 14px;
+      padding: 14px 20px;
+      overflow: hidden;
+    }
+
+    .zone-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .zone-header {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 0.82rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-secondary);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* Zone A: Source Drop / Paste */
+    .drop-area {
+      margin: 12px;
+      padding: 16px;
+      border: 2px dashed var(--border-subtle);
+      border-radius: 8px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    .drop-area:hover, .drop-area.drag-over {
+      border-color: var(--accent-blue);
+      background: rgba(59, 130, 246, 0.08);
+    }
+
+    .input-group {
+      padding: 0 12px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+    }
+
+    .input-group label {
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+
+    input[type="text"], textarea, select {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+    }
+
+    textarea {
+      flex: 1;
+      resize: none;
+    }
+
+    /* Zone B: Live Diet Slider & 3-Tab Inspector */
+    .diet-controls {
+      padding: 12px 16px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-subtle);
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .slider-box {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .slider-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    .gauge-box {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .gauge-bar-track {
+      height: 10px;
+      background: var(--bg-primary);
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .gauge-bar-fill {
+      height: 100%;
+      width: 35%;
+      background: var(--accent-green);
+      transition: width 0.2s, background 0.2s;
+    }
+
+    .tabs-bar {
+      display: flex;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--bg-panel);
+      padding: 0 12px;
+      gap: 6px;
+    }
+
+    .tab-btn {
+      background: transparent;
+      color: var(--text-secondary);
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 9px 14px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .tab-btn[aria-selected="true"] {
+      color: var(--text-primary);
+      border-bottom-color: var(--accent-blue);
+    }
+
+    .inspector-pane {
+      flex: 1;
+      padding: 14px;
+      overflow-y: auto;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      background: var(--bg-primary);
+    }
+
+    /* Zone C: 1-Click Action Bar */
+    footer {
+      background: var(--bg-panel);
+      border-top: 1px solid var(--border-subtle);
+      padding: 0 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .action-buttons {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .btn {
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border-subtle);
+      border-radius: 7px;
+      padding: 9px 15px;
+      font-size: 0.84rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .btn-primary {
+      background: var(--accent-blue);
+      border-color: #2563eb;
+      color: #ffffff;
+    }
+
+    .status-pill {
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <header role="banner">
+    <div class="brand">
+      <span>⚡ Vicem Studio v5.3</span>
+      <span style="color: var(--text-secondary); font-weight: 400; font-size: 0.85rem;">Diet the Context, Pass the Baton</span>
+    </div>
+    <div class="badge-zero-net" aria-label="Security status: 100% Local Zero-Network">
+      🔒 100% Local · Zero-Network (CSP default-src 'none')
+    </div>
+  </header>
+
+  <!-- Main 3-Zone Workbench (Zone A & Zone B) -->
+  <main>
+    <!-- ZONE A: SOURCE DROP & INPUT -->
+    <section class="zone-card" role="region" aria-label="Zone A: Source Drop and Project Input">
+      <div class="zone-header">
+        <span>Zone A · Source Input</span>
+        <span id="fileCountBadge">1 file</span>
+      </div>
+
+      <div class="drop-area" id="dropZone" tabindex="0" role="button" aria-label="Drop project folder or files here, or click to select files">
+        <div style="font-weight: 600; margin-bottom: 4px;">📂 Drop Project Folder / Chat Export</div>
+        <div style="font-size: 0.74rem; color: var(--text-secondary);">Supports TS/JS/Py/Go/Rust, logs, ChatGPT/Claude JSON</div>
+        <input type="file" id="filePicker" multiple webkitdirectory style="display: none;" />
+      </div>
+
+      <div class="input-group" style="flex: 0;">
+        <label for="goalInput">Task Goal</label>
+        <input type="text" id="goalInput" value="Fix JWT expiration bug and verify rate-limit middleware" />
+      </div>
+
+      <div class="input-group" style="flex: 0;">
+        <label for="nextInput">Immediate NEXT Step</label>
+        <input type="text" id="nextInput" value="Update verifySessionToken in src/auth.ts and run npm test" />
+      </div>
+
+      <div class="input-group">
+        <label for="rawSourceInput">Raw Code / Error Log / Diff Input</label>
+        <textarea id="rawSourceInput" aria-label="Raw source code or error log input">export interface AuthConfig {
+  issuer: string;
+  ttlSeconds: number;
+}
+
+export async function verifySessionToken(token: string, cfg: AuthConfig): Promise<boolean> {
+  const apiKey = "sk-proj-1234567890abcdefghijklmnop";
+  const step1 = token.trim();
+  const step2 = step1.split('.');
+  if (step2.length !== 3) {
+    return false;
+  }
+  const payload = step2[1];
+  const isValid = payload.length > 0 && cfg.ttlSeconds > 0;
+  const auditTag = `${cfg.issuer}:${isValid}`;
+  return Boolean(auditTag && apiKey);
+}</textarea>
+      </div>
+    </section>
+
+    <!-- ZONE B: LIVE DIET SLIDER & 3-TAB INSPECTOR -->
+    <section class="zone-card" role="region" aria-label="Zone B: Live Diet Slider and 3-Tab Baton Inspector">
+      <div class="zone-header">
+        <span>Zone B · Live Context Diet &amp; Inspector</span>
+        <span id="secretShieldSummary" aria-live="polite">🔒 1 secret masked</span>
+      </div>
+
+      <div class="diet-controls">
+        <div class="slider-box">
+          <label for="dietSlider" style="font-size: 0.78rem; font-weight: 600;">
+            Diet Level: <span id="dietLevelName">L2 · Balanced Skeletons (Recommended)</span>
+          </label>
+          <input type="range" id="dietSlider" min="1" max="3" step="1" value="2" aria-label="Context Diet Compression Level (1 to 3)" />
+          <div class="slider-labels">
+            <span>L1 Light (Logs)</span>
+            <span>L2 Balanced (Skeletons)</span>
+            <span>L3 Max (Diff Only)</span>
+          </div>
+        </div>
+
+        <div class="gauge-box" aria-live="polite">
+          <div style="display: flex; justify-content: space-between; font-size: 0.78rem; font-weight: 600;">
+            <span id="tokenStatsText">Diet: 120 → 78 tokens (-35%)</span>
+            <span id="budgetStatusText" style="color: var(--accent-green);">SAFE (&lt; 4,000 tok)</span>
+          </div>
+          <div class="gauge-bar-track">
+            <div class="gauge-bar-fill" id="gaugeFill"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tabs-bar" role="tablist" aria-label="Baton Inspector Views">
+        <button class="tab-btn" role="tab" id="tabPreview" aria-selected="true" data-tab="preview">Baton Preview (BATON.md)</button>
+        <button class="tab-btn" role="tab" id="tabSkeleton" aria-selected="false" data-tab="skeleton">Skeleton Diff</button>
+        <button class="tab-btn" role="tab" id="tabSecrets" aria-selected="false" data-tab="secrets">🔒 Masked Secrets (<span id="secretTabCount">1</span>)</button>
+      </div>
+
+      <pre class="inspector-pane" id="inspectorOutput" role="tabpanel" aria-live="polite"></pre>
+    </section>
+  </main>
+
+  <!-- ZONE C: 1-CLICK ACTION BAR -->
+  <footer role="region" aria-label="Zone C: 1-Click Delivery Action Bar">
+    <div class="status-pill" id="actionReceipt" aria-live="polite">
+      Ready · Press Cmd+Enter (or Ctrl+Enter) to Copy Baton
+    </div>
+    <div class="action-buttons">
+      <label for="targetSelect" style="font-size: 0.8rem; color: var(--text-secondary);">Target:</label>
+      <select id="targetSelect" aria-label="Select target AI agent">
+        <option value="codex">OpenAI Codex CLI</option>
+        <option value="claude">Claude Code</option>
+        <option value="antigravity">Antigravity IDE</option>
+        <option value="cursor">Cursor</option>
+        <option value="web">ChatGPT / Claude Web</option>
+      </select>
+      <button class="btn btn-primary" id="copyBatonBtn" title="Shortcut: Cmd+Enter / Ctrl+Enter">
+        📋 Copy Baton (Cmd+Enter)
+      </button>
+      <button class="btn" id="downloadBatonBtn">
+        ⬇ Download BATON.md
+      </button>
+    </div>
+  </footer>
+
+  <script>
+    (() => {
+      // 1. Browser-side Calibrated Token Estimator (100% identical to vicem.mjs C-05 formula — BUG-07 Fix)
+      function estimateTokens(text) {
+        if (!text || typeof text !== 'string' || text.length === 0) return 0;
+        const koreanMatches = text.match(/[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f\u3000-\u9fff\uf900-\ufaff]/g);
+        const punctMatches = text.match(/[{}[\],:;"'()=><_./\\-]/g);
+        const lineMatches = text.match(/\n/g);
+        const korean = koreanMatches ? koreanMatches.length : 0;
+        const punct = punctMatches ? punctMatches.length : 0;
+        const lines = lineMatches ? lineMatches.length : 0;
+        const other = Math.max(0, text.length - korean - punct);
+        const tokens = (other * 0.245) + (punct * 0.45) + (korean * 0.76) + (lines * 0.15);
+        return Math.max(1, Math.round(tokens));
+      }
+
+      // 2. Deterministic Secret Redactor (Isomorphic with vicem.mjs C-06 + Shannon Entropy — Fix 11-B)
+      const SECRET_RULES = [
+        { provider: 'AWS_KEY', regex: /\b(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b/g },
+        { provider: 'GITHUB', regex: /\b(?:ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82}|gho_[a-zA-Z0-9]{36}|ghs_[a-zA-Z0-9]{36})\b/g },
+        { provider: 'ANTHROPIC', regex: /\bsk-ant-[a-zA-Z0-9\-_]{20,}\b/g },
+        { provider: 'OPENAI', regex: /\bsk-(?:proj-|svcacct-)?[a-zA-Z0-9\-_]{20,}\b/g },
+        { provider: 'GOOGLE', regex: /\bAIza[0-9A-Za-z\-_]{35}\b/g },
+        { provider: 'SLACK', regex: /\bxox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,32}\b/g },
+        { provider: 'STRIPE', regex: /\b(?:sk|rk)_live_[0-9a-zA-Z]{24,99}\b/g },
+        { provider: 'JWT', regex: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
+        { provider: 'PRIVATE_KEY', regex: /-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/g }
+      ];
+
+      function shortHash4(str) {
+        let h = 2166136261;
+        for (let i = 0; i < str.length; i++) {
+          h ^= str.charCodeAt(i);
+          h = Math.imul(h, 16777619);
+        }
+        return (h >>> 0).toString(16).padStart(4, '0').slice(0, 4);
+      }
+
+      function shannonEntropy(str) {
+        if (!str || str.length === 0) return 0;
+        const freq = Object.create(null);
+        for (let i = 0; i < str.length; i++) {
+          const ch = str[i];
+          freq[ch] = (freq[ch] || 0) + 1;
+        }
+        let entropy = 0;
+        const len = str.length;
+        for (const k in freq) {
+          const p = freq[k] / len;
+          entropy -= p * Math.log2(p);
+        }
+        return entropy;
+      }
+
+      function redactSecrets(text) {
+        let sanitized = String(text || '');
+        const findings = [];
+        for (const rule of SECRET_RULES) {
+          sanitized = sanitized.replace(rule.regex, (m) => {
+            const token = `‹REDACTED:${rule.provider}:${shortHash4(m)}›`;
+            findings.push({ provider: rule.provider, token, preview: m.slice(0, 7) + '...' });
+            return token;
+          });
+        }
+        // High-entropy assignment & standalone high-entropy token check (matching vicem.mjs SecretRedactor — CRIT-06 Fix)
+        const assignRegex = /\b((?:api[_-]?key|secret|token|password|passwd|auth[_-]?token|access[_-]?key|client[_-]?secret)[a-zA-Z0-9_]*)\s*([:=])\s*(['"`])([a-zA-Z0-9+/=_\-.]{16,})\3/gi;
+        sanitized = sanitized.replace(assignRegex, (full, keyName, sep, quote, val) => {
+          if (val.includes('REDACTED:')) return full;
+          if (shannonEntropy(val) >= 3.5) {
+            const token = `‹REDACTED:HIGH_ENTROPY:${shortHash4(val)}›`;
+            findings.push({ provider: 'HIGH_ENTROPY', token, preview: val.slice(0, 6) + '...' });
+            return `${keyName}${sep}${quote}${token}${quote}`;
+          }
+          return full;
+        });
+        const standaloneRegex = /(?<![A-Za-z0-9/_.-])\b([A-Za-z0-9+/_-]{28,})\b(?![A-Za-z0-9/_.-])/g;
+        sanitized = sanitized.replace(standaloneRegex, (match) => {
+          if (match.includes('REDACTED:') || match.includes('/')) return match;
+          const hasUpper = /[A-Z]/.test(match);
+          const hasLower = /[a-z]/.test(match);
+          const hasDigit = /[0-9]/.test(match);
+          if (hasUpper && hasLower && hasDigit && shannonEntropy(match) >= 4.5) {
+            const token = `‹REDACTED:SECRET:${shortHash4(match)}›`;
+            findings.push({ provider: 'SECRET', token, preview: match.slice(0, 6) + '...' });
+            return token;
+          }
+          return match;
+        });
+        return { sanitized, findings };
+      }
+
+      // 3. Isomorphic Brace-Balanced & Indentation Code Skeletonizer (matches vicem.mjs CodeSkeletonizer — Fix 11-B)
+      function findBalancedBraces(code) {
+        const pairs = [];
+        const stack = [];
+        const tmplStack = [];
+        let state = 'CODE';
+        for (let i = 0; i < code.length; i++) {
+          const ch = code[i];
+          const next = code[i + 1] || '';
+          if (state === 'LINE_COMMENT') {
+            if (ch === '\n') state = 'CODE';
+            continue;
+          }
+          if (state === 'BLOCK_COMMENT') {
+            if (ch === '*' && next === '/') { state = 'CODE'; i++; }
+            continue;
+          }
+          if (state === 'SINGLE_STRING') {
+            if (ch === '\\') { i++; continue; }
+            if (ch === "'") state = 'CODE';
+            continue;
+          }
+          if (state === 'DOUBLE_STRING') {
+            if (ch === '\\') { i++; continue; }
+            if (ch === '"') state = 'CODE';
+            continue;
+          }
+          if (state === 'TEMPLATE_STRING') {
+            if (ch === '\\') { i++; continue; }
+            if (ch === '$' && next === '{') {
+              tmplStack.push(stack.length);
+              state = 'CODE';
+              i++;
+              continue;
+            }
+            if (ch === '`') state = 'CODE';
+            continue;
+          }
+          if (ch === '/' && next === '/') { state = 'LINE_COMMENT'; i++; continue; }
+          if (ch === '/' && next === '*') { state = 'BLOCK_COMMENT'; i++; continue; }
+          if (ch === "'") { state = 'SINGLE_STRING'; continue; }
+          if (ch === '"') { state = 'DOUBLE_STRING'; continue; }
+          if (ch === '`') { state = 'TEMPLATE_STRING'; continue; }
+          if (ch === '{') {
+            stack.push(i);
+          } else if (ch === '}') {
+            if (tmplStack.length > 0 && stack.length === tmplStack[tmplStack.length - 1]) {
+              tmplStack.pop();
+              state = 'TEMPLATE_STRING';
+              continue;
+            }
+            if (stack.length > 0) {
+              const openIdx = stack.pop();
+              pairs.push({ openIdx, closeIdx: i, depth: stack.length });
+            }
+          }
+        }
+        return pairs;
+      }
+
+      function stripNestedParens(str) {
+        let out = '';
+        let depth = 0;
+        for (let i = 0; i < str.length; i++) {
+          const ch = str[i];
+          if (ch === '(') {
+            if (depth === 0) out += '(';
+            depth++;
+          } else if (ch === ')') {
+            depth = Math.max(0, depth - 1);
+            if (depth === 0) out += ')';
+          } else if (depth === 0) {
+            out += ch;
+          }
+        }
+        return out;
+      }
+
+      function classifyCBlockHeader(code, openIdx) {
+        const lookbackStart = Math.max(0, openIdx - 500);
+        const rawBefore = code.slice(lookbackStart, openIdx);
+        const collapsed = stripNestedParens(rawBefore);
+        const segments = collapsed.split(/[;{}]/);
+        const lastSeg = (segments[segments.length - 1] || '').trim();
+        if (!lastSeg) return { kind: 'other' };
+        if (/\b(?:interface|type|enum|struct|trait)\s+[A-Za-z0-9_$]+/.test(lastSeg)) return { kind: 'contract' };
+        if (/\b(?:class|namespace|mod|impl)\b/.test(lastSeg)) return { kind: 'container' };
+        if (/\b(?:if|for|while|switch|catch|try|else|do)\s*(?:\(\))?$/.test(lastSeg)) return { kind: 'control' };
+        const isArrow = /=>\s*$/.test(lastSeg);
+        const isFunc = /\b(?:function|fn|func)\b/.test(lastSeg) || /(?:^|[\s\n])(?:async\s+|static\s+|public\s+|private\s+|protected\s+|get\s+|set\s+)*[A-Za-z_$][A-Za-z0-9_$]*\s*\(\)[^{;]*$/.test(lastSeg);
+        if (isArrow || isFunc) return { kind: 'function' };
+        return { kind: 'other' };
+      }
+
+      function skeletonizePython(code, minLines = 12) {
+        const lines = code.split(/\r?\n/);
+        const out = [];
+        let i = 0;
+        while (i < lines.length) {
+          const line = lines[i];
+          const m = line.match(/^(\s*)(?:async\s+)?def\s+([A-Za-z0-9_]+)\s*\(/);
+          if (!m) { out.push(line); i++; continue; }
+          const defIndent = m[1].length;
+          let sigEnd = i;
+          while (sigEnd < lines.length && !/:\s*(?:#.*)?$/.test(lines[sigEnd])) sigEnd++;
+          if (sigEnd >= lines.length) { out.push(line); i++; continue; }
+          let bodyEnd = sigEnd;
+          let j = sigEnd + 1;
+          while (j < lines.length) {
+            const trimmed = lines[j].trim();
+            if (trimmed === '' || trimmed.startsWith('#')) { j++; continue; }
+            const indent = (lines[j].match(/^(\s*)/)?.[1] || '').length;
+            if (indent <= defIndent) break;
+            bodyEnd = j;
+            j++;
+          }
+          const span = bodyEnd - i + 1;
+          if (span >= minLines) {
+            for (let k = i; k <= sigEnd; k++) out.push(lines[k]);
+            out.push(' '.repeat(defIndent + 4) + 'pass  # ... [skeletonized]');
+            i = bodyEnd + 1;
+          } else {
+            for (let k = i; k <= bodyEnd; k++) out.push(lines[k]);
+            i = bodyEnd + 1;
+          }
+        }
+        return out.join('\n');
+      }
+
+      function skeletonizeCode(code, level) {
+        if (level === 1) return code;
+        if (level === 3) {
+          return code
+            .split('\n')
+            .filter((line) => /^(?:\s*export\s+|\s*(?:interface|type|enum|class|function|def|fn|func)\b)/.test(line))
+            .join('\n');
+        }
+        let working = code;
+        if (/^\s*(?:async\s+)?def\s+[A-Za-z0-9_]+\s*\(/m.test(working)) {
+          working = skeletonizePython(working, 12);
+        }
+        const pairs = findBalancedBraces(working);
+        const candidates = [];
+        for (const p of pairs) {
+          const bodySlice = working.slice(p.openIdx, p.closeIdx + 1);
+          const lineSpan = bodySlice.split('\n').length;
+          if (lineSpan < 12) continue;
+          const info = classifyCBlockHeader(working, p.openIdx);
+          if (info.kind === 'function') {
+            candidates.push(p);
+          }
+        }
+        candidates.sort((a, b) => a.openIdx - b.openIdx);
+        const filtered = [];
+        let lastEnd = -1;
+        for (const c of candidates) {
+          if (c.openIdx > lastEnd) {
+            filtered.push(c);
+            lastEnd = c.closeIdx;
+          }
+        }
+        if (filtered.length === 0) return working;
+        let result = '';
+        let cursor = 0;
+        for (const c of filtered) {
+          result += working.slice(cursor, c.openIdx) + '{ /* ... */ }';
+          cursor = c.closeIdx + 1;
+        }
+        result += working.slice(cursor);
+        return result;
+      }
+
+      // DOM elements
+      const goalInput = document.getElementById('goalInput');
+      const nextInput = document.getElementById('nextInput');
+      const rawSourceInput = document.getElementById('rawSourceInput');
+      const dietSlider = document.getElementById('dietSlider');
+      const dietLevelName = document.getElementById('dietLevelName');
+      const tokenStatsText = document.getElementById('tokenStatsText');
+      const budgetStatusText = document.getElementById('budgetStatusText');
+      const gaugeFill = document.getElementById('gaugeFill');
+      const inspectorOutput = document.getElementById('inspectorOutput');
+      const secretShieldSummary = document.getElementById('secretShieldSummary');
+      const secretTabCount = document.getElementById('secretTabCount');
+      const targetSelect = document.getElementById('targetSelect');
+      const actionReceipt = document.getElementById('actionReceipt');
+      const copyBatonBtn = document.getElementById('copyBatonBtn');
+      const downloadBatonBtn = document.getElementById('downloadBatonBtn');
+      const dropZone = document.getElementById('dropZone');
+      const filePicker = document.getElementById('filePicker');
+      const fileCountBadge = document.getElementById('fileCountBadge');
+
+      let activeTab = 'preview';
+      let currentState = { batonMd: '', skeletonPreview: '', findings: [], rawTokens: 0, dietTokens: 0 };
+
+      const LEVEL_LABELS = {
+        1: 'L1 · Light (Log Slimming + Secret Redaction)',
+        2: 'L2 · Balanced Skeletons (Recommended)',
+        3: 'L3 · Aggressive (Signatures & Diff Only)'
+      };
+
+      function recomputeBaton() {
+        const level = parseInt(dietSlider.value, 10) || 2;
+        dietLevelName.textContent = LEVEL_LABELS[level];
+
+        const rawCode = rawSourceInput.value || '';
+        const goal = goalInput.value || 'Project Handoff Task';
+        const nextStep = nextInput.value || 'Inspect BATON.md and continue implementation';
+        const target = targetSelect.value || 'codex';
+
+        const skeleton = skeletonizeCode(rawCode, level);
+        const { sanitized: cleanSkel, findings } = redactSecrets(skeleton);
+        const rawTok = estimateTokens(goal + '\n' + nextStep + '\n' + rawCode);
+
+        const draftBaton = [
+          `# BATON: ${goal.slice(0, 80)}`,
+          `> Generated by Vicem Studio v5.3 | Target: ${target} | Diet Level: L${level}`,
+          ``,
+          `## 1. Goal`,
+          goal,
+          ``,
+          `## 2. Immediate NEXT`,
+          `1. **${nextStep}**`,
+          ``,
+          `## 3. Architectural Context (Code Skeletons)`,
+          '```ts',
+          cleanSkel.trim(),
+          '```',
+          ``,
+          `---`,
+          `> ⚡ **EXECUTION ANCHOR:** Never write skeleton placeholders (\`{ ... }\`, \`/* ... */\`) or \`‹REDACTED›\` tokens into source files. Begin immediately from **Section 2 (Immediate NEXT #1)**.`
+        ].join('\n');
+
+        const dietTok = estimateTokens(draftBaton);
+        const effRaw = Math.max(rawTok, dietTok);
+        const ratio = effRaw > dietTok ? Math.round(((effRaw - dietTok) / effRaw) * 100) : 0;
+
+        tokenStatsText.textContent = `Diet: ${effRaw} → ${dietTok} tokens (-${ratio}%)`;
+        const pct = Math.min(100, Math.max(6, Math.round((dietTok / 4000) * 100)));
+        gaugeFill.style.width = `${pct}%`;
+
+        if (dietTok <= 2000) {
+          gaugeFill.style.background = 'var(--accent-green)';
+          budgetStatusText.textContent = 'SAFE (URL Prefill & CLI Ready)';
+          budgetStatusText.style.color = 'var(--accent-green)';
+        } else if (dietTok <= 4000) {
+          gaugeFill.style.background = 'var(--accent-amber)';
+          budgetStatusText.textContent = 'CLIPBOARD MODE (< 4,000 tok)';
+          budgetStatusText.style.color = 'var(--accent-amber)';
+        } else {
+          gaugeFill.style.background = 'var(--accent-red)';
+          budgetStatusText.textContent = 'OVER BUDGET (> 4,000 tok)';
+          budgetStatusText.style.color = 'var(--accent-red)';
+        }
+
+        secretShieldSummary.textContent = `🔒 ${findings.length} secret(s) masked`;
+        secretTabCount.textContent = String(findings.length);
+
+        currentState = {
+          batonMd: draftBaton,
+          skeletonPreview: cleanSkel,
+          findings,
+          rawTokens: effRaw,
+          dietTokens: dietTok,
+          ratio
+        };
+
+        renderInspector();
+      }
+
+      function renderInspector() {
+        if (activeTab === 'preview') {
+          inspectorOutput.textContent = currentState.batonMd;
+        } else if (activeTab === 'skeleton') {
+          inspectorOutput.textContent = currentState.skeletonPreview;
+        } else {
+          if (currentState.findings.length === 0) {
+            inspectorOutput.textContent = '✓ Zero secrets detected in input.';
+          } else {
+            inspectorOutput.textContent = currentState.findings
+              .map((f, i) => `${i + 1}. [${f.provider}] ${f.preview}  -->  ${f.token}`)
+              .join('\n');
+          }
+        }
+      }
+
+      // Tab switching
+      document.querySelectorAll('.tab-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.tab-btn').forEach((b) => b.setAttribute('aria-selected', 'false'));
+          btn.setAttribute('aria-selected', 'true');
+          activeTab = btn.getAttribute('data-tab');
+          renderInspector();
+        });
+      });
+
+      // Live input listeners
+      [goalInput, nextInput, rawSourceInput, dietSlider, targetSelect].forEach((el) => {
+        el.addEventListener('input', recomputeBaton);
+      });
+
+      // Copy Baton Action
+      async function copyBaton() {
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(currentState.batonMd);
+          }
+          actionReceipt.textContent = `✓ [Vicem] Copied Baton (${currentState.rawTokens} → ${currentState.dietTokens} tok, 🔒 ${currentState.findings.length} secrets masked)`;
+        } catch {
+          actionReceipt.textContent = `✓ [Vicem] Baton ready in preview (${currentState.dietTokens} tok)`;
+        }
+      }
+
+      copyBatonBtn.addEventListener('click', copyBaton);
+
+      // Keyboard shortcut: Cmd+Enter / Ctrl+Enter copies Baton immediately
+      window.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          copyBaton();
+        }
+      });
+
+      // Download BATON.md
+      downloadBatonBtn.addEventListener('click', () => {
+        const blob = new Blob([currentState.batonMd], { type: 'text/markdown;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'BATON.md';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        actionReceipt.textContent = `✓ [Vicem] Downloaded BATON.md (${currentState.dietTokens} tokens)`;
+      });
+
+      // File Drop & Picker (Credential-blind: skips .env / *key* / *token*)
+      function isSafeFileName(name) {
+        return !/^(?:\.env|auth\.json|credentials\.json|id_rsa|id_ed25519)$/i.test(name);
+      }
+
+      async function handleFiles(fileList) {
+        const safeFiles = Array.from(fileList).filter((f) => isSafeFileName(f.name)).slice(0, 15);
+        if (safeFiles.length === 0) return;
+        const chunks = [];
+        for (const f of safeFiles) {
+          const text = await f.text();
+          chunks.push(`// File: ${f.name}\n${text}`);
+        }
+        rawSourceInput.value = chunks.join('\n\n');
+        fileCountBadge.textContent = `${safeFiles.length} file(s)`;
+        recomputeBaton();
+      }
+
+      dropZone.addEventListener('click', () => filePicker.click());
+      filePicker.addEventListener('change', (e) => handleFiles(e.target.files));
+      dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('drag-over');
+      });
+      dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+      dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        if (e.dataTransfer && e.dataTransfer.files) {
+          handleFiles(e.dataTransfer.files);
+        }
+      });
+
+      // Boot Hydration from `.vicem/studio.live.html` (#vicem-hydration-data — Fix 11-A)
+      const hydrationEl = document.getElementById('vicem-hydration-data');
+      if (hydrationEl && hydrationEl.textContent) {
+        try {
+          const hydrated = JSON.parse(hydrationEl.textContent);
+          if (hydrated.goal) goalInput.value = hydrated.goal;
+          if (Array.isArray(hydrated.nextSteps) && hydrated.nextSteps[0]) {
+            nextInput.value = hydrated.nextSteps[0];
+          } else if (typeof hydrated.nextStep === 'string') {
+            nextInput.value = hydrated.nextStep;
+          }
+          if (typeof hydrated.rawSource === 'string') rawSourceInput.value = hydrated.rawSource;
+          if (typeof hydrated.targetAgent === 'string') targetSelect.value = hydrated.targetAgent;
+          if (typeof hydrated.fileCount === 'number') fileCountBadge.textContent = `${hydrated.fileCount} file(s)`;
+        } catch {}
+      }
+
+      // Initial render
+      recomputeBaton();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+{
+  "name": "vicem",
+  "version": "5.3.0",
+  "description": "Zero-Dependency, Zero-Network AI Agent Context Baton & Diet Suite (CLI + MCP Server + Web Studio)",
+  "type": "module",
+  "main": "./vicem.mjs",
+  "bin": {
+    "vicem": "./vicem.mjs"
+  },
+  "files": [
+    "vicem.mjs",
+    "index.html",
+    "setup.command",
+    "setup.bat",
+    ".agents/skills/vicem/SKILL.md",
+    "AGENTS.snippet.md",
+    "README.md",
+    "SECURITY.md",
+    "SHA256SUMS"
+  ],
+  "homepage": "https://rakkunn.github.io/vicem/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Rakkunn/vicem.git"
+  },
+  "author": "Rakkunn",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "doctor": "node ./vicem.mjs doctor",
+    "guard": "node ./vicem.mjs guard"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "keywords": [
+    "ai-agents",
+    "context-compression",
+    "handoff",
+    "claude-code",
+    "codex",
+    "antigravity",
+    "cursor",
+    "mcp",
+    "zero-dependency"
+  ],
+  "license": "MIT"
+}
