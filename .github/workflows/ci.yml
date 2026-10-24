@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+      - name: Verify zero external dependencies
+        run: node -e "const p=JSON.parse(fs.readFileSync('package.json','utf8')); if(p.dependencies && Object.keys(p.dependencies).length>0) process.exit(1);"
+      - name: Verify SHA-256 checksums
+        run: shasum -a 256 -c SHA256SUMS
+      - name: Run 51-test suite
+        run: npm test
