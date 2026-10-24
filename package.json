@@ -25,6 +25,8 @@
   },
   "author": "Rakkunn",
   "scripts": {
+    "build": "node --check ./vicem.mjs",
+    "start": "node ./vicem.mjs mcp-server",
     "test": "node --test test/*.test.mjs",
     "doctor": "node ./vicem.mjs doctor",
     "guard": "node ./vicem.mjs guard"

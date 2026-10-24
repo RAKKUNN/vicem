@@ -5326,6 +5326,8 @@ Options:
         flags.profile = argv[++i];
       } else if (arg === '--role' && argv[i + 1]) {
         flags.role = argv[++i];
+      } else if (arg === '--mcp') {
+        positional.unshift('mcp');
       } else if (!arg.startsWith('-')) {
         positional.push(arg);
       }
@@ -5347,8 +5349,8 @@ Options:
 
     const subcmd = (positional[0] || '').toLowerCase();
 
-    // 1. MCP Server Mode (`vicem mcp`)
-    if (subcmd === 'mcp') {
+    // 1. MCP Server Mode (`vicem mcp` / `vicem mcp-server` / `vicem --mcp`)
+    if (subcmd === 'mcp' || subcmd === 'mcp-server') {
       const server = new McpServerAdapter(projectRoot);
       server.startStdio(options.stdin || process.stdin, outStream);
       return { exitCode: 0, mode: 'mcp', server };
@@ -5816,7 +5818,9 @@ const isMainModule =
   path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 
 if (isMainModule) {
-  VicemApp.run(process.argv.slice(2)).then((res) => {
+  const cliArgs = process.argv.slice(2);
+  const effectiveArgs = cliArgs.length === 0 && !process.stdin.isTTY ? ['mcp-server'] : cliArgs;
+  VicemApp.run(effectiveArgs).then((res) => {
     if (res && res.mode !== 'mcp' && typeof res.exitCode === 'number' && res.exitCode !== 0) {
       process.exitCode = res.exitCode;
     }
