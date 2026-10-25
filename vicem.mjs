@@ -5841,10 +5841,10 @@ Options:
   }
 }
 
-// Execute CLI if invoked directly
 const isMainModule =
   process.argv[1] &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+  fs.existsSync(process.argv[1]) &&
+  fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
 
 if (isMainModule) {
   const cliArgs = process.argv.slice(2);

@@ -8,6 +8,13 @@
 
 # Vicem — Diet the Context, Pass the Baton
 
+<p align="left">
+  <a href="https://glama.ai/mcp/servers/RAKKUNN/vicem"><img src="https://glama.ai/mcp/servers/RAKKUNN/vicem/badges/score.svg" alt="Vicem MCP server rated A on Glama" /></a>
+  <a href="https://github.com/RAKKUNN/vicem/releases/tag/v1.1.0"><img src="https://img.shields.io/badge/release-v1.1.0%20(Desktop%20GUI)-10B981" alt="Release v1.1.0" /></a>
+  <img src="https://img.shields.io/badge/dependencies-0-3B82F6" alt="Zero Dependencies" />
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-F59E0B" alt="MIT License" /></a>
+</p>
+
 > **Hit Claude's 5-hour quota limit mid-refactor? Or watching your AI agent lose its mind after 150k tokens of context rot?**
 >
 > **Hand off your exact coding session, git diff, and compressed code skeletons to Codex, Gemini, Cursor, Antigravity IDE, or Web AI in 3 seconds — with up to 90% fewer tokens and `0` third-party dependencies.**
