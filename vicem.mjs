@@ -2950,6 +2950,7 @@ export class BatonIaBuilder {
     budgetTokens = 4000,
     role = null,
     fuzzyMatchedFrom = null,
+    persist = true,
   }) {
     const resolvedRoot = path.resolve(projectRoot || process.cwd());
     const batonId = `baton-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
@@ -2958,7 +2959,7 @@ export class BatonIaBuilder {
 
     // 1. Save Pre-Handoff Snapshot of modified working tree files before target touches them
     const filesToBackup = [...(git.modifiedFiles || []), ...(git.untrackedFiles || [])];
-    PreHandoffSnapshotStore.saveSnapshot(resolvedRoot, batonId, filesToBackup);
+    if (persist) PreHandoffSnapshotStore.saveSnapshot(resolvedRoot, batonId, filesToBackup);
 
     // 2. Diet Engine stage processing (Code Skeletons + Slimmed Logs + Diff)
     const dietEngine = new DietEngine(resolvedRoot);
@@ -3137,16 +3138,19 @@ export class BatonIaBuilder {
     };
 
     // Save .vicem/BATON.md, .vicem/baton.json, and .vicem/ledger.json atomically under process lock (BUG-06 Fix)
-    const vicemDir = AtomicFs.ensureVicemDir(resolvedRoot);
+    const vicemDir = path.join(resolvedRoot, '.vicem');
     const batonMdPath = path.join(vicemDir, 'BATON.md');
     const batonJsonPath = path.join(vicemDir, 'baton.json');
-    AtomicFs.acquireLock(resolvedRoot);
-    try {
-      AtomicFs.writeFileAtomic(batonMdPath, sealedMarkdown + '\n');
-      AtomicFs.writeFileAtomic(batonJsonPath, JSON.stringify(batonJson, null, 2) + '\n');
-      dietEngine.ledger.save(resolvedRoot);
-    } finally {
-      AtomicFs.releaseLock(resolvedRoot);
+    if (persist) {
+      AtomicFs.ensureVicemDir(resolvedRoot);
+      AtomicFs.acquireLock(resolvedRoot);
+      try {
+        AtomicFs.writeFileAtomic(batonMdPath, sealedMarkdown + '\n');
+        AtomicFs.writeFileAtomic(batonJsonPath, JSON.stringify(batonJson, null, 2) + '\n');
+        dietEngine.ledger.save(resolvedRoot);
+      } finally {
+        AtomicFs.releaseLock(resolvedRoot);
+      }
     }
 
     return {
@@ -3668,7 +3672,11 @@ export class CliLauncherAdapter {
     return {
       launched: res.error == null,
       status: res.status ?? 0,
-      error: res.error ? res.error.message : null,
+      error: res.error
+        ? res.error.code === 'ENOENT'
+          ? `'${spec.command}' not found on PATH`
+          : res.error.message
+        : null,
       spec,
     };
   }
@@ -5270,6 +5278,7 @@ Usage (Tier 1 — Daily Zero-Config Commands):
   vicem rollback          Restore working tree from pre-handoff snapshot or resume old session
 
 Workflow & Studio Commands (Tier 2):
+  vicem gui               Launch the interactive Desktop Utility GUI (12 platforms, live telemetry)
   vicem self              Compact current agent context (Context Rot Rescue)
   vicem build <target>    Hand off architectural plan with BUILDER role framing
   vicem review <target>   Hand off implementation diff with REVIEWER role framing
@@ -5529,6 +5538,19 @@ Options:
     }
 
     // 10. Web Studio (`vicem studio` — Fix 11-A & CRIT-04: harvests active session for hydration)
+    if (subcmd === 'gui' || subcmd === 'app') {
+      const guiScriptPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'vicem-gui.mjs');
+      outStream.write(`${UxFormatter.isNoColor(env) ? '[OK]' : '✓'} [Vicem GUI] http://127.0.0.1:4310\n`);
+      if (!flags.dryRun && !options.skipLaunch && fs.existsSync(guiScriptPath)) {
+        childProcess.spawnSync(process.execPath, [guiScriptPath], {
+          cwd: projectRoot,
+          stdio: 'inherit',
+          env: { ...env, VICEM_PROJECT_ROOT: projectRoot, VICEM_AUTO_OPEN: '1' },
+        });
+      }
+      return { exitCode: 0, mode: 'gui', guiScriptPath };
+    }
+
     if (subcmd === 'studio') {
       const studioHtmlPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'index.html');
       let liveHtmlPath = studioHtmlPath;
@@ -5771,19 +5793,6 @@ Options:
       deliveryInfo = UrlPrefillAdapter.deliverWeb(baton.markdown, 'chatgpt', {
         dryRun: flags.dryRun || options.skipLaunch,
       });
-    } else {
-      const effectiveCli = targetAgent === 'self' ? (sourceAgent === 'git' ? 'claude' : sourceAgent) : targetAgent;
-      const envVars = {};
-      if (flags.profile) {
-        if (effectiveCli === 'claude') envVars.CLAUDE_CONFIG_DIR = flags.profile;
-        if (effectiveCli === 'codex') envVars.CODEX_HOME = flags.profile;
-      }
-      deliveryInfo = CliLauncherAdapter.deliver(effectiveCli, baton, {
-        projectRoot,
-        headless: flags.headless,
-        dryRun: flags.dryRun || options.skipLaunch,
-        envVars,
-      });
     }
 
     const receipt = UxFormatter.renderReceipt(
@@ -5799,6 +5808,26 @@ Options:
       env
     );
     outStream.write(receipt + '\n');
+
+    // CLI targets block until the agent exits, so the receipt must be printed before launching.
+    if (!ideTargets.has(targetAgent) && targetAgent !== 'web') {
+      const effectiveCli = targetAgent === 'self' ? (sourceAgent === 'git' ? 'claude' : sourceAgent) : targetAgent;
+      const envVars = {};
+      if (flags.profile) {
+        if (effectiveCli === 'claude') envVars.CLAUDE_CONFIG_DIR = flags.profile;
+        if (effectiveCli === 'codex') envVars.CODEX_HOME = flags.profile;
+      }
+      deliveryInfo = CliLauncherAdapter.deliver(effectiveCli, baton, {
+        projectRoot,
+        headless: flags.headless,
+        dryRun: flags.dryRun || options.skipLaunch,
+        envVars,
+      });
+      if (deliveryInfo.error) {
+        outStream.write(`[ERR] [Vicem] Failed to launch '${effectiveCli}': ${deliveryInfo.error}.\n`);
+        return { exitCode: 1, mode: 'launch_failed', sourceAgent, targetAgent, baton, deliveryInfo, receipt };
+      }
+    }
 
     return {
       exitCode: 0,

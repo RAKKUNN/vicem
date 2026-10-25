@@ -18,6 +18,14 @@
   <a href="./SECURITY.md"><strong>Security &amp; Minimal TCB</strong></a>
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./gui-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="./gui-light.png" />
+    <img src="./gui-dark.png" width="100%" alt="Vicem Unified Desktop Utility GUI (Dark & Light Mode)" />
+  </picture>
+</p>
+
 ![Vicem 3-Second Context Baton & Diet Demo](./demo.gif)
 
 ```text
@@ -59,39 +67,49 @@ git clone https://github.com/Rakkunn/vicem.git && cd vicem
 
 Wait 2 seconds — Vicem automatically registers the global `vicem` command, configures MCP servers across your installed agents (Claude Code, Codex, Cursor, Windsurf, Antigravity IDE), and installs the `.agents/skills/vicem/SKILL.md` skill.
 
-### Option B: Direct Zero-Install CLI Usage
-Vicem consists of **standalone files** (`vicem.mjs`, `index.html`, `.agents/skills/vicem/SKILL.md`) built entirely on Node.js standard library modules:
+### Option B: Interactive Desktop Utility GUI & Direct CLI Usage
+Vicem consists of **standalone files** (`vicem.mjs`, `vicem-gui.mjs`, `index.html`, `.agents/skills/vicem/SKILL.md`) built entirely on Node.js standard library modules:
 
 ```bash
-# 1. One-click auto-setup (PATH + MCP registration + Git pre-commit guard)
+# 1. Launch the interactive Desktop Utility GUI (12 platforms, live quota telemetry, 1-click handoff)
+vicem gui
+
+# 2. One-click auto-setup (PATH + MCP registration + Git pre-commit guard)
 ./vicem.mjs setup
 
-# 2. Auto-detect active session and pass baton to recommended target
+# 3. Auto-detect active session and pass baton to recommended target
 vicem
 
-# 3. Pass baton to a specific CLI, IDE, or Web AI target
+# 4. Pass baton to a specific CLI, IDE, or Web AI target (12 platforms across macOS / Windows / Linux)
 vicem codex
 vicem claude
 vicem gemini
+vicem cursor
+vicem windsurf
+vicem vscode
+vicem cline
+vicem opencode
+vicem aider
+vicem goose
 vicem ide
 vicem web
 
-# 4. Compact current bloated session in-place (Context Rot Rescue)
+# 5. Compact current bloated session in-place (Context Rot Rescue)
 vicem self
 
-# 5. Return baton to previous agent & auto-unmount temporary rules
+# 6. Return baton to previous agent & auto-unmount temporary rules
 vicem back
 
-# 6. Restore pre-handoff file snapshot or roll back session
+# 7. Restore pre-handoff file snapshot or roll back session
 vicem rollback
 
-# 7. Open Hydrated Zero-Network Web Studio (.vicem/studio.live.html)
+# 8. Open Hydrated Zero-Network Web Studio (.vicem/studio.live.html)
 vicem studio
 
-# 8. Extract & smart-patch code blocks from Web AI clipboard reply
+# 9. Extract & smart-patch code blocks from Web AI clipboard reply
 vicem land
 
-# 9. Run <50ms zero-spawn environment & agent storage diagnostics
+# 10. Run <50ms zero-spawn environment & agent storage diagnostics
 vicem doctor
 ```
 

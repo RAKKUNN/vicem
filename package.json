@@ -5,11 +5,15 @@
   "type": "module",
   "main": "./vicem.mjs",
   "bin": {
-    "vicem": "./vicem.mjs"
+    "vicem": "./vicem.mjs",
+    "vicem-gui": "./vicem-gui.mjs"
   },
   "files": [
     "vicem.mjs",
+    "vicem-gui.mjs",
     "index.html",
+    "logo-dark-transparent.png",
+    "logo-light-transparent.png",
     "setup.command",
     "setup.bat",
     ".agents/skills/vicem/SKILL.md",
