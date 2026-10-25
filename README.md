@@ -10,6 +10,7 @@
 
 <p align="left">
   <a href="https://glama.ai/mcp/servers/RAKKUNN/vicem"><img src="https://glama.ai/mcp/servers/RAKKUNN/vicem/badges/score.svg" alt="Vicem MCP server rated A on Glama" /></a>
+  <a href="https://www.npmjs.com/package/vicem-cli"><img src="https://img.shields.io/npm/v/vicem-cli?color=CB3837&label=npm%20(vicem-cli)" alt="npm vicem-cli" /></a>
   <a href="https://github.com/RAKKUNN/vicem/releases/tag/v1.1.0"><img src="https://img.shields.io/badge/release-v1.1.0%20(Desktop%20GUI)-10B981" alt="Release v1.1.0" /></a>
   <img src="https://img.shields.io/badge/dependencies-0-3B82F6" alt="Zero Dependencies" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-F59E0B" alt="MIT License" /></a>
@@ -18,10 +19,17 @@
 > **Hit Claude's 5-hour quota limit mid-refactor? Or watching your AI agent lose its mind after 150k tokens of context rot?**
 >
 > **Hand off your exact coding session, git diff, and compressed code skeletons to Codex, Gemini, Cursor, Antigravity IDE, or Web AI in 3 seconds — with up to 90% fewer tokens and `0` third-party dependencies.**
+>
+> **Tip:** Click **Star** (top-right) to bookmark this repo for the next time your coding agent hits a 5-hour quota limit or context rot.
+
+```bash
+# Run the local 3-column Web Studio GUI immediately (zero dependencies, Node.js 22+ built-ins only)
+npx vicem-cli gui
+```
 
 <p align="left">
   <a href="https://rakkunn.github.io/vicem/"><strong>Launch Zero-Install Browser Studio (GitHub Pages)</strong></a> ·
-  <a href="https://github.com/Rakkunn/vicem"><strong>GitHub Repository</strong></a> ·
+  <a href="https://www.npmjs.com/package/vicem-cli"><strong>npm Package (vicem-cli)</strong></a> ·
   <a href="./SECURITY.md"><strong>Security &amp; Minimal TCB</strong></a>
 </p>
 
