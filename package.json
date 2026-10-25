@@ -1,12 +1,12 @@
 {
-  "name": "vicem",
+  "name": "@rakkunn/vicem",
   "version": "1.1.0",
   "description": "Zero-Dependency, Zero-Network AI Agent Context Baton & Diet Suite (CLI + MCP Server + Web Studio)",
   "type": "module",
   "main": "./vicem.mjs",
   "bin": {
-    "vicem": "./vicem.mjs",
-    "vicem-gui": "./vicem-gui.mjs"
+    "vicem": "vicem.mjs",
+    "vicem-gui": "vicem-gui.mjs"
   },
   "files": [
     "vicem.mjs",
@@ -25,7 +25,7 @@
   "homepage": "https://rakkunn.github.io/vicem/",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Rakkunn/vicem.git"
+    "url": "git+https://github.com/Rakkunn/vicem.git"
   },
   "author": "Rakkunn",
   "scripts": {
