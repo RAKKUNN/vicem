@@ -1,11 +1,12 @@
 {
   "name": "@rakkunn/vicem",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Zero-Dependency, Zero-Network AI Agent Context Baton & Diet Suite (CLI + MCP Server + Web Studio)",
   "type": "module",
   "main": "./vicem.mjs",
   "bin": {
     "vicem": "vicem.mjs",
+    "vicem-cli": "vicem.mjs",
     "vicem-gui": "vicem-gui.mjs"
   },
   "files": [

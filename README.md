@@ -11,7 +11,7 @@
 <p align="left">
   <a href="https://glama.ai/mcp/servers/RAKKUNN/vicem"><img src="https://glama.ai/mcp/servers/RAKKUNN/vicem/badges/score.svg" alt="Vicem MCP server rated A on Glama" /></a>
   <a href="https://mcpservers.org/servers/rakkunn/vicem"><img src="https://mcpservers.org/badge.svg" alt="Listed on mcpservers.org" /></a>
-  <a href="https://www.npmjs.com/package/vicem-cli"><img src="https://img.shields.io/npm/v/vicem-cli?color=CB3837&label=npm%20(vicem-cli)" alt="npm vicem-cli" /></a>
+  <a href="https://www.npmjs.com/package/@rakkunn/vicem"><img src="https://img.shields.io/npm/v/@rakkunn/vicem?color=CB3837&label=npm%20(@rakkunn/vicem)" alt="npm @rakkunn/vicem" /></a>
   <a href="https://github.com/RAKKUNN/vicem/releases/tag/v1.1.0"><img src="https://img.shields.io/badge/release-v1.1.0%20(Desktop%20GUI)-10B981" alt="Release v1.1.0" /></a>
   <img src="https://img.shields.io/badge/dependencies-0-3B82F6" alt="Zero Dependencies" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-F59E0B" alt="MIT License" /></a>
@@ -30,24 +30,24 @@
 ### 1. Run the Local Web Studio GUI or Pass a Baton Immediately
 ```bash
 # Launch the local 3-column Desktop Utility GUI (12 agents, live token/quota telemetry)
-npx vicem-cli gui
+npx -y @rakkunn/vicem gui
 
 # Or pack a compressed baton from your current repo & hand off in 1 command
-npx vicem-cli codex
-npx vicem-cli claude
-npx vicem-cli cursor
+npx -y @rakkunn/vicem codex
+npx -y @rakkunn/vicem claude
+npx -y @rakkunn/vicem cursor
 
 # Or auto-configure global `vicem` CLI + MCP servers across all installed agents
-npx vicem-cli setup
+npx -y @rakkunn/vicem setup
 ```
 
 ### 2. Add as an MCP Server in 1 Line (Claude Code / Codex / Cursor)
 ```bash
 # Claude Code
-claude mcp add vicem -- npx -y vicem-cli mcp
+claude mcp add vicem -- npx -y @rakkunn/vicem mcp
 
 # OpenAI Codex CLI
-codex mcp add vicem -- npx -y vicem-cli mcp
+codex mcp add vicem -- npx -y @rakkunn/vicem mcp
 ```
 
 <details>
@@ -60,7 +60,7 @@ Add to `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`, or `claude_d
   "mcpServers": {
     "vicem": {
       "command": "npx",
-      "args": ["-y", "vicem-cli", "mcp"]
+      "args": ["-y", "@rakkunn/vicem", "mcp"]
     }
   }
 }
@@ -69,7 +69,7 @@ Add to `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`, or `claude_d
 
 <p align="left">
   <a href="https://rakkunn.github.io/vicem/"><strong>🌐 Try Zero-Install Browser Sandbox (GitHub Pages)</strong></a> ·
-  <a href="https://www.npmjs.com/package/vicem-cli"><strong>📦 npm (vicem-cli)</strong></a> ·
+  <a href="https://www.npmjs.com/package/@rakkunn/vicem"><strong>📦 npm (@rakkunn/vicem)</strong></a> ·
   <a href="./SECURITY.md"><strong>🔒 Security &amp; Zero-Network Proof</strong></a>
 </p>
 
@@ -88,7 +88,7 @@ Add to `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`, or `claude_d
 ![Vicem 3-Second Context Baton & Diet Demo](./demo.gif)
 
 ```text
-$ npx vicem-cli codex
+$ npx -y @rakkunn/vicem codex
 
   ╭─ VICEM CONTEXT BATON & DIET RECEIPT ──────────────────────────────────╮
   │ Source Session : Claude Code (sess-9f3a2c · 42 turns harvested)       │
