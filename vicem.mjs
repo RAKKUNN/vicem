@@ -4477,28 +4477,14 @@ export class McpServerAdapter {
         if (toolName === 'vicem_read_baton') {
           const batonPath = path.join(this.projectRoot, '.vicem', 'BATON.md');
           if (!fs.existsSync(batonPath)) {
-            return {
-              jsonrpc: '2.0',
-              id,
-              result: {
-                content: [{ type: 'text', text: 'No .vicem/BATON.md found in project.' }],
-                isError: true,
-              },
-            };
+            return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'No .vicem/BATON.md found in project.' }], isError: true } };
           }
           const md = fs.readFileSync(batonPath, 'utf8');
           const drift = StalenessDriftGuard.check(this.projectRoot);
           const driftBanner = drift.drifted
             ? `> ⚠️ [STALENESS DRIFT WARNING]: Baton was created at commit ${drift.batonHead}, but current HEAD is ${drift.currentHead}.\n\n`
             : '';
-          return {
-            jsonrpc: '2.0',
-            id,
-            result: {
-              content: [{ type: 'text', text: driftBanner + md }],
-              isError: false,
-            },
-          };
+          return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: driftBanner + md }], isError: false } };
         }
 
         if (toolName === 'vicem_rehydrate') {
@@ -4507,84 +4493,36 @@ export class McpServerAdapter {
           const ledger = DietLedger.load(this.projectRoot);
           const rawCode = ledger.getEntry(filePath, symbolName);
           if (!rawCode) {
-            return {
-              jsonrpc: '2.0',
-              id,
-              result: {
-                content: [
-                  {
-                    type: 'text',
-                    text: `Symbol '${symbolName}' in '${filePath}' not found in .vicem/ledger.json.`,
-                  },
-                ],
-                isError: true,
-              },
-            };
+            return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Symbol '${symbolName}' in '${filePath}' not found in .vicem/ledger.json.` }], isError: true } };
           }
           // Enforce SecretRedactor on rehydrated output as defense-in-depth (SRS C-06 / UC-15)
           const { sanitized } = SecretRedactor.redact(rawCode);
-          return {
-            jsonrpc: '2.0',
-            id,
-            result: {
-              content: [
-                {
-                  type: 'text',
-                  text: sanitized,
-                },
-              ],
-              isError: false,
-            },
-          };
+          const drift = StalenessDriftGuard.check(this.projectRoot);
+          let warn = drift.drifted ? `// ⚠️ [STALENESS DRIFT WARNING]: Baton commit ${drift.batonHead} != HEAD ${drift.currentHead}.\n` : '';
+          if (!warn && filePath && AtomicFs.isSafeRepoFilePath(this.projectRoot, filePath)) {
+            const abs = path.resolve(this.projectRoot, filePath);
+            if (fs.existsSync(abs) && !SecretRedactor.redact(fs.readFileSync(abs, 'utf8')).sanitized.includes(sanitized.trim())) {
+              warn = `// ⚠️ [STALENESS DRIFT WARNING]: '${filePath}' modified on disk since ledger snapshot.\n`;
+            }
+          }
+          return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: warn + sanitized }], isError: false } };
         }
 
         if (toolName === 'vicem_check_guard') {
-          const res = SafetyGuardEngine.verifyAndProtect(
-            this.projectRoot,
-            args.diff_text || null,
-            { autoRestore: false }
-          );
+          const res = SafetyGuardEngine.verifyAndProtect(this.projectRoot, args.diff_text || null, { autoRestore: false });
           if (!res.passed) {
-            const selfHealPrompts = res.violations.map((v) =>
-              UxFormatter.renderAgentSelfHealPrompt(v)
-            );
-            return {
-              jsonrpc: '2.0',
-              id,
-              result: {
-                content: [{ type: 'text', text: selfHealPrompts.join('\n') }],
-                isError: true,
-              },
-            };
+            const selfHealPrompts = res.violations.map((v) => UxFormatter.renderAgentSelfHealPrompt(v));
+            return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: selfHealPrompts.join('\n') }], isError: true } };
           }
-          return {
-            jsonrpc: '2.0',
-            id,
-            result: {
-              content: [{ type: 'text', text: 'OK: All 3 Safety Guards passed.' }],
-              isError: false,
-            },
-          };
+          return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'OK: All 3 Safety Guards passed.' }], isError: false } };
         }
 
-        return {
-          jsonrpc: '2.0',
-          id,
-          error: { code: -32601, message: `Unknown tool: ${toolName}` },
-        };
+        return { jsonrpc: '2.0', id, error: { code: -32601, message: `Unknown tool: ${toolName}` } };
       }
 
-      return {
-        jsonrpc: '2.0',
-        id,
-        error: { code: -32601, message: `Method not found: ${method}` },
-      };
+      return { jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } };
     } catch (err) {
-      return {
-        jsonrpc: '2.0',
-        id,
-        error: { code: -32603, message: err.message || 'Internal MCP server error' },
-      };
+      return { jsonrpc: '2.0', id, error: { code: -32603, message: err.message || 'Internal MCP server error' } };
     }
   }
 
