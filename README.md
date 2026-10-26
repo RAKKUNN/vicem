@@ -17,22 +17,65 @@
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-F59E0B" alt="MIT License" /></a>
 </p>
 
-> **Hit Claude's 5-hour quota limit mid-refactor? Or watching your AI agent lose its mind after 150k tokens of context rot?**
+> **Hit Claude Code's 5-hour quota mid-feature? Or watching Cursor / Codex slow to a crawl after 150k tokens of context rot?**
 >
-> **Hand off your exact coding session, git diff, and compressed code skeletons to Codex, Gemini, Cursor, Antigravity IDE, or Web AI in 3 seconds — with up to 90% fewer tokens and `0` third-party dependencies.**
+> **Vicem** compacts your active coding session by **80–90%** (via deterministic code skeletonization + lossless MCP on-demand rehydration) and hands off a clean `.vicem/BATON.md` across **Claude Code, Cursor, Codex CLI, Gemini CLI, Windsurf, Antigravity IDE, and Web AI** in 3 seconds — with **`0` npm dependencies** and **`0` network calls**.
 >
-> **Tip:** Click **Star** (top-right) to bookmark this repo for the next time your coding agent hits a 5-hour quota limit or context rot.
+> ⭐ **Tip:** Click **Star** (top-right) to bookmark this repo for the next time your coding agent hits a 5-hour quota limit or context rot.
 
+---
+
+## ⚡ 10-Second Quick Start (`npx` — Zero Install)
+
+### 1. Run the Local Web Studio GUI or Pass a Baton Immediately
 ```bash
-# Run the local 3-column Web Studio GUI immediately (zero dependencies, Node.js 22+ built-ins only)
+# Launch the local 3-column Desktop Utility GUI (12 agents, live token/quota telemetry)
 npx vicem-cli gui
+
+# Or pack a compressed baton from your current repo & hand off in 1 command
+npx vicem-cli codex
+npx vicem-cli claude
+npx vicem-cli cursor
+
+# Or auto-configure global `vicem` CLI + MCP servers across all installed agents
+npx vicem-cli setup
 ```
 
+### 2. Add as an MCP Server in 1 Line (Claude Code / Codex / Cursor)
+```bash
+# Claude Code
+claude mcp add vicem -- npx -y vicem-cli mcp
+
+# OpenAI Codex CLI
+codex mcp add vicem -- npx -y vicem-cli mcp
+```
+
+<details>
+<summary><strong>Cursor / Windsurf / Claude Desktop (<code>mcp.json</code> config)</strong></summary>
+
+Add to `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`, or `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "vicem": {
+      "command": "npx",
+      "args": ["-y", "vicem-cli", "mcp"]
+    }
+  }
+}
+```
+</details>
+
 <p align="left">
-  <a href="https://rakkunn.github.io/vicem/"><strong>Launch Zero-Install Browser Studio (GitHub Pages)</strong></a> ·
-  <a href="https://www.npmjs.com/package/vicem-cli"><strong>npm Package (vicem-cli)</strong></a> ·
-  <a href="./SECURITY.md"><strong>Security &amp; Minimal TCB</strong></a>
+  <a href="https://rakkunn.github.io/vicem/"><strong>🌐 Try Zero-Install Browser Sandbox (GitHub Pages)</strong></a> ·
+  <a href="https://www.npmjs.com/package/vicem-cli"><strong>📦 npm (vicem-cli)</strong></a> ·
+  <a href="./SECURITY.md"><strong>🔒 Security &amp; Zero-Network Proof</strong></a>
 </p>
+
+---
+
+## Visual Overview
 
 <p align="center">
   <picture>
@@ -45,7 +88,7 @@ npx vicem-cli gui
 ![Vicem 3-Second Context Baton & Diet Demo](./demo.gif)
 
 ```text
-$ vicem codex
+$ npx vicem-cli codex
 
   ╭─ VICEM CONTEXT BATON & DIET RECEIPT ──────────────────────────────────╮
   │ Source Session : Claude Code (sess-9f3a2c · 42 turns harvested)       │
@@ -59,111 +102,59 @@ $ vicem codex
 
 ---
 
-## Measured Pipeline Contribution (Before vs. After Vicem)
+## How Lossless Code Skeletonization + MCP Rehydration Works
 
-| Pipeline Stage | Raw Session State (Before Vicem) | After Vicem Baton & Diet | Measured Contribution |
+Instead of lossy LLM summarization that forgets exact type contracts, Vicem keeps all imports, types, and signatures 100% intact inside `.vicem/BATON.md` while collapsing unchanged function bodies `>= 12` lines into `.vicem/ledger.json`:
+
+```ts
+// What the receiving agent sees in .vicem/BATON.md (-85% tokens, disk file untouched):
+export interface JwtPayload { sub: string; exp: number; role: 'admin' | 'user'; }
+export async function verifySessionToken(rawToken: string, secret: string): Promise<JwtPayload> { /* ... */ }
+```
+
+When the receiving agent actually needs to edit `verifySessionToken`, it calls the MCP tool **`vicem_rehydrate("src/auth.ts", "verifySessionToken")`** to pull back the exact raw lines on demand (with automatic git HEAD and live-file SHA-256 staleness detection).
+
+| Pipeline Stage | Before Vicem (Raw Session) | After Vicem Baton & Diet | Token Savings |
 | :--- | :--- | :--- | :--- |
-| **1. Session Continuity Relay** | 40+ turns of raw JSONL / SQLite history locked inside a single agent | Harvests active `Goal`, `Done`, `Immediate NEXT` & `git diff` into `.vicem/BATON.md` | **< 3s handoff** across 15+ CLI, IDE & Web AI agents |
-| **2. Code Skeletonization** | Full source files with long implementation bodies (`~120,000 tok`) | Types & signatures 100% intact; bodies `>= 12` lines indexed in `.vicem/ledger.json` | **-80% to -90% code tokens** (100% lossless via MCP `vicem_rehydrate`) |
-| **3. Test & Error Log Slimming** | Verbose ANSI spinners & `node_modules` stack frames (`~45,000 tok`) | Root failure message + top 5 project stack frames (`~1,200 tok`) | **-95% log noise** while preserving exact failure root cause |
-| **4. Data Sampling & Noise Gate** | Lockfiles, build bundles, and multi-megabyte JSON / CSV / SQL dumps | Artifacts filtered; data files reduced to inferred schema + 2 sample rows | **-98% data bloat** & zero context window overflow |
-| **5. Security & Write Integrity** | Plaintext credentials in logs & risk of placeholder overwrites | 3-Tier local secret redaction + `SkeletonWriteGuard` & `SecretCommitGuard` | **0 leaked secrets** & **0 external packages (`dependencies: 0`)** |
+| **1. Session Handoff** | 40+ turns of raw JSONL / SQLite history locked in one tool | Extracts `Goal`, `Done`, `Immediate NEXT` & `git diff` into `.vicem/BATON.md` | **< 3s handoff** across 12+ CLI, IDE & Web AI agents |
+| **2. Code Skeletonizer** | Full source files with unchanged function bodies (`~120,000 tok`) | Signatures & types 100% intact; bodies indexed in `.vicem/ledger.json` | **-80% to -90% code tokens** (lossless via `vicem_rehydrate`) |
+| **3. Test & Log Slimmer** | Verbose ANSI spinners & `node_modules` stack frames (`~45,000 tok`) | Failing assertion + top 5 user-code stack frames (`~1,200 tok`) | **-95% log noise** |
+| **4. Data & Noise Gate** | Lockfiles, build bundles, and huge JSON / CSV / SQL dumps | Lockfiles dropped; data files reduced to inferred schema + 2 sample rows | **-98% data bloat** |
+| **5. Safety & Secret Guard** | Plaintext `.env` keys in logs & risk of placeholder overwrites | Local secret redaction + `SkeletonWriteGuard` pre-commit protection | **0 leaked secrets** & **0 npm dependencies** |
 
 ---
 
-## 1-Click Setup (macOS, Windows, Linux — Zero Terminal Config Needed)
-
-### Option A: Double-Click Installer (Recommended)
-```bash
-git clone https://github.com/Rakkunn/vicem.git && cd vicem
-```
-1. **macOS / Linux:** Double-click **`setup.command`** (or run `./vicem.mjs setup`).
-2. **Windows:** Double-click **`setup.bat`**.
-3. **Browser-Only (Air-Gapped / No Node.js):** Open **[https://rakkunn.github.io/vicem/](https://rakkunn.github.io/vicem/)** or double-click **`index.html`** locally in Chrome, Edge, Brave, or Safari (`connect-src 'none'`).
-
-Wait 2 seconds — Vicem automatically registers the global `vicem` command, configures MCP servers across your installed agents (Claude Code, Codex, Cursor, Windsurf, Antigravity IDE), and installs the `.agents/skills/vicem/SKILL.md` skill.
-
-### Option B: Interactive Desktop Utility GUI & Direct CLI Usage
-Vicem consists of **standalone files** (`vicem.mjs`, `vicem-gui.mjs`, `index.html`, `.agents/skills/vicem/SKILL.md`) built entirely on Node.js standard library modules:
+## Direct CLI Commands & Offline Source Setup
 
 ```bash
-# 1. Launch the interactive Desktop Utility GUI (12 platforms, live quota telemetry, 1-click handoff)
+# 1. Launch the interactive Desktop Utility GUI
 vicem gui
 
-# 2. One-click auto-setup (PATH + MCP registration + Git pre-commit guard)
-./vicem.mjs setup
-
-# 3. Auto-detect active session and pass baton to recommended target
-vicem
-
-# 4. Pass baton to a specific CLI, IDE, or Web AI target (12 platforms across macOS / Windows / Linux)
-vicem codex
-vicem claude
-vicem gemini
-vicem cursor
-vicem windsurf
-vicem vscode
-vicem cline
-vicem opencode
-vicem aider
-vicem goose
-vicem ide
-vicem web
-
-# 5. Compact current bloated session in-place (Context Rot Rescue)
+# 2. Compact current bloated session in-place (Context Rot Rescue)
 vicem self
 
-# 6. Return baton to previous agent & auto-unmount temporary rules
+# 3. Pass baton to any CLI, IDE, or Web AI target
+vicem codex | vicem claude | vicem gemini | vicem cursor | vicem windsurf | vicem vscode | vicem web
+
+# 4. Return baton to previous agent & auto-unmount temporary rules
 vicem back
 
-# 7. Restore pre-handoff file snapshot or roll back session
-vicem rollback
-
-# 8. Open Hydrated Zero-Network Web Studio (.vicem/studio.live.html)
-vicem studio
-
-# 9. Extract & smart-patch code blocks from Web AI clipboard reply
+# 5. Extract & smart-patch code blocks from a Web AI clipboard reply
 vicem land
 
-# 10. Run <50ms zero-spawn environment & agent storage diagnostics
+# 6. Run <50ms environment & agent storage diagnostics
 vicem doctor
 ```
 
----
-
-## Architecture & Core Capabilities
-
-1. **Zero-Config 1-Command Relay (`vicem codex`, `vicem claude`, `vicem ide`, `vicem web`):**
-   - Auto-detects the active source session strictly scoped to the current project directory (`cwd`), preventing cross-project session bleed.
-   - Length-adaptive fuzzy target matching (`vicem codexx` → `codex`, `vicem claud` → `claude`).
-   - Interactive CLI handoff preserves full TTY keyboard control (`stdio: 'inherit'`).
-2. **4-Stage Context Diet Engine (`-75%` to `-90%` Token Reduction):**
-   - **Stage 1 (Noise Gate):** Drops lockfiles, build artifacts, binaries, and minified bundles.
-   - **Stage 2 (Code Skeletonizer):** Preserves `interface`, `type`, `enum`, and class/method signatures 100% intact while replacing function bodies `>= 12` lines with `/* ... */` or `pass` (indexing full bodies in `.vicem/ledger.json` for on-demand MCP rehydration).
-   - **Stage 3 (Log Slimmer):** Strips ANSI codes, carriage-return spinners, and `node_modules`/`site-packages` frames while preserving the root error and 5 user stack frames.
-   - **Stage 4 (Data Sampler):** Compresses large JSON/CSV/SQL files into compact schemas + 2 sample rows.
-3. **Bookended U-Shaped Attention Baton IA (`.vicem/BATON.md`):**
-   - **Zone 1 (Top Primacy 15%):** `# BATON` header, `## 1. Goal`, and `## 2. Immediate NEXT`.
-   - **Zone 2 (Middle Evidence 75%):** `## 3. Done`, `## 4. Work Evidence (Git Diff & Slimmed Logs)`, `## 5. Architectural Context (Code Skeletons)`, and `## 6. Diet Ledger`.
-   - **Zone 3 (Bottom Recency 10%):** `EXECUTION ANCHOR` preventing placeholder writes and anchoring immediate execution.
-4. **3-Tier Secret Redactor & 3-Pillar Safety Guards:**
-   - Redacts AWS, GitHub, OpenAI, Anthropic, Google, Slack, Stripe, JWT, PEM private keys, and high-entropy assignments into `‹REDACTED:PROVIDER:HASH4›`.
-   - **Pre-Handoff Lossless Snapshot (`.vicem/snapshots/<batonId>/`):** Protects dirty working-tree files without ever running destructive `git checkout --`.
-   - **`SkeletonWriteGuard` & `SecretCommitGuard`:** Blocks agents from writing `{ ... }`, `/* ... */`, `‹REDACTED:...›`, or `<!-- VICEM-BATON-START -->` markers into source files.
-
----
-
-## Manual MCP Server Registration (Optional)
-
-If you prefer manual registration over `./vicem.mjs setup`, register `vicem.mjs mcp` so agents can call `vicem_create_baton`, `vicem_read_baton`, `vicem_rehydrate`, and `vicem_check_guard`:
+<details>
+<summary><strong>Offline / Air-Gapped Source Clone Installer (No npm required)</strong></summary>
 
 ```bash
-# Claude Code
-claude mcp add vicem -- node /absolute/path/to/vicem.mjs mcp
-
-# OpenAI Codex CLI
-codex mcp add vicem -- node /absolute/path/to/vicem.mjs mcp
+git clone https://github.com/RAKKUNN/vicem.git && cd vicem
+./vicem.mjs setup   # or double-click setup.command (macOS/Linux) / setup.bat (Windows)
 ```
+For browser-only air-gapped environments without Node.js, open **`index.html`** directly in Chrome, Edge, Brave, or Safari (enforced by `connect-src 'none'` CSP).
+</details>
 
 ---
 
@@ -178,18 +169,6 @@ node -e "console.log(JSON.parse(fs.readFileSync('package.json')).dependencies ??
 # 2. Verify SHA-256 checksums of all core artifacts
 shasum -a 256 -c SHA256SUMS
 
-# 3. Run under strict Node.js Permission Model sandbox
-node --permission \
-  --allow-fs-read=. \
-  --allow-fs-write=.vicem \
-  --allow-child-process \
-  vicem.mjs diet
-```
-
----
-
-## Automated Test Suite
-
-```bash
+# 3. Run the 52-test automated suite
 node --test test/*.test.mjs
 ```
