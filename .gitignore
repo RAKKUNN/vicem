@@ -1,0 +1,5 @@
+.DS_Store
+.vicem/
+CLAUDE.local.md
+.cursor/rules/_vicem_baton.mdc
+node_modules/

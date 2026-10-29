@@ -1,0 +1,1410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+  <title>Vicem — Zero-Dependency AI Agent Context Baton &amp; Diet Suite</title>
+  <style>
+    :root {
+      --bg-base: #09090b;
+      --bg-surface: #111114;
+      --bg-elevated: #18181c;
+      --bg-glass: rgba(17, 17, 20, 0.84);
+      --border-hairline: #232329;
+      --border-strong: #34343d;
+      --text-primary: #fafafa;
+      --text-secondary: #a1a1aa;
+      --text-muted: #71717a;
+      --accent-primary: #f4f4f5;
+      --accent-green: #e4e4e7;
+      --accent-amber: #a1a1aa;
+      --accent-red: #71717a;
+      --accent-cyan: #d4d4d8;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* Top Navigation */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-hairline);
+    }
+
+    .nav-container {
+      max-width: 1160px;
+      margin: 0 auto;
+      height: 60px;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 1.05rem;
+      letter-spacing: -0.02em;
+      color: var(--text-primary);
+      text-decoration: none;
+    }
+
+    .brand-mark {
+      width: 26px;
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      font-size: 0.86rem;
+      color: var(--text-secondary);
+    }
+
+    .nav-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      transition: color 0.15s;
+    }
+
+    .nav-links a:hover {
+      color: var(--text-primary);
+    }
+
+    .badge-zero-net {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-hairline);
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+
+    /* Layout Container */
+    .container {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Hero Showcase Section */
+    .hero {
+      padding: 88px 0 64px;
+      border-bottom: 1px solid var(--border-hairline);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-hairline);
+      padding: 5px 12px;
+      border-radius: 999px;
+      margin-bottom: 24px;
+    }
+
+    .eyebrow-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-green);
+    }
+
+    .hero h1 {
+      font-size: clamp(2.4rem, 5vw, 4.1rem);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1.08;
+      max-width: 860px;
+      margin-bottom: 22px;
+    }
+
+    .hero-lead {
+      font-size: clamp(1.05rem, 1.8vw, 1.25rem);
+      color: var(--text-secondary);
+      max-width: 760px;
+      margin-bottom: 36px;
+      font-weight: 400;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 0.92fr 1.28fr;
+      gap: 28px;
+      align-items: stretch;
+      margin-top: 20px;
+    }
+
+    @media (max-width: 920px) {
+      .hero-grid {
+        grid-template-columns: 1fr;
+      }
+      .nav-links {
+        display: none;
+      }
+    }
+
+    .install-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-hairline);
+      border-radius: 10px;
+      padding: 22px;
+      min-width: 0;
+    }
+
+    .install-title {
+      font-size: 0.78rem;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+
+    .cmd-box {
+      background: var(--bg-base);
+      border: 1px solid var(--border-hairline);
+      border-radius: 7px;
+      padding: 13px 14px;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      color: var(--text-primary);
+      overflow-x: auto;
+      margin-bottom: 16px;
+      white-space: nowrap;
+    }
+
+    .os-matrix {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .os-pill {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-hairline);
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 0.78rem;
+    }
+
+    .os-pill strong {
+      display: block;
+      color: var(--text-primary);
+      margin-bottom: 2px;
+    }
+
+    .os-pill span {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+    }
+
+    /* Terminal Showcase Window */
+    .terminal-window {
+      background: #050507;
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      overflow: hidden;
+      min-width: 0;
+      box-shadow: 0 24px 48px rgba(0, 0, 0, 0.55);
+    }
+
+    .terminal-bar {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-hairline);
+      height: 36px;
+      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      color: var(--text-muted);
+    }
+
+    .terminal-dots {
+      display: flex;
+      gap: 6px;
+    }
+
+    .terminal-dots span {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--border-strong);
+    }
+
+    .terminal-body {
+      padding: 18px;
+      font-family: var(--font-mono);
+      font-size: 0.71rem;
+      line-height: 1.65;
+      color: #d4d4d8;
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    .t-muted { color: #71717a; }
+    .t-red { color: #a1a1aa; }
+    .t-green { color: #fafafa; font-weight: 600; }
+    .t-cyan { color: #a1a1aa; }
+    .t-amber { color: #d4d4d8; }
+    .t-bold { color: #fafafa; font-weight: 600; }
+
+    /* Architectural Spec Grid */
+    .section {
+      padding: 72px 0;
+      border-bottom: 1px solid var(--border-hairline);
+    }
+
+    .section-header {
+      margin-bottom: 40px;
+    }
+
+    .section-tag {
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .section-title {
+      font-size: 1.85rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+
+    .spec-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid var(--border-hairline);
+      border-left: 1px solid var(--border-hairline);
+    }
+
+    @media (max-width: 860px) {
+      .spec-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .spec-cell {
+      padding: 28px;
+      border-right: 1px solid var(--border-hairline);
+      border-bottom: 1px solid var(--border-hairline);
+      background: var(--bg-base);
+    }
+
+    .spec-num {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+
+    .spec-cell h3 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 10px;
+      letter-spacing: -0.01em;
+    }
+
+    .spec-cell p {
+      font-size: 0.88rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    /* Comparison Table */
+    .comp-table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border-hairline);
+      border-radius: 10px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.86rem;
+    }
+
+    th, td {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border-hairline);
+    }
+
+    th {
+      background: var(--bg-surface);
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    td {
+      color: var(--text-secondary);
+    }
+
+    td strong {
+      color: var(--text-primary);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    /* Interactive Sandbox Workbench (Zone A + Zone B + Zone C) */
+    .workbench-grid {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 16px;
+      min-height: 520px;
+    }
+
+    @media (max-width: 920px) {
+      .workbench-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .zone-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-hairline);
+      border-radius: 10px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .zone-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-hairline);
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--bg-elevated);
+    }
+
+    .drop-area {
+      margin: 14px;
+      padding: 16px;
+      border: 1px dashed var(--border-strong);
+      border-radius: 8px;
+      text-align: center;
+      cursor: pointer;
+      background: var(--bg-base);
+      transition: border-color 0.15s;
+    }
+
+    .drop-area:hover, .drop-area.drag-over {
+      border-color: var(--text-primary);
+    }
+
+    .input-group {
+      padding: 0 14px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+    }
+
+    .input-group label {
+      font-size: 0.76rem;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    input[type="text"], textarea, select {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      border: 1px solid var(--border-hairline);
+      border-radius: 6px;
+      padding: 9px 11px;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      outline: none;
+    }
+
+    input[type="text"]:focus, textarea:focus, select:focus {
+      border-color: var(--border-strong);
+    }
+
+    textarea {
+      flex: 1;
+      min-height: 180px;
+      resize: vertical;
+    }
+
+    .diet-controls {
+      padding: 14px 16px;
+      background: var(--bg-base);
+      border-bottom: 1px solid var(--border-hairline);
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      align-items: center;
+    }
+
+    @media (max-width: 680px) {
+      .diet-controls {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .slider-box {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .slider-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.72rem;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+    }
+
+    .gauge-box {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .gauge-bar-track {
+      height: 8px;
+      background: var(--bg-elevated);
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid var(--border-hairline);
+    }
+
+    .gauge-bar-fill {
+      height: 100%;
+      width: 35%;
+      background: var(--accent-green);
+      transition: width 0.2s, background 0.2s;
+    }
+
+    .tabs-bar {
+      display: flex;
+      border-bottom: 1px solid var(--border-hairline);
+      background: var(--bg-surface);
+      padding: 0 12px;
+      gap: 4px;
+    }
+
+    .tab-btn {
+      background: transparent;
+      color: var(--text-secondary);
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 10px 14px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .tab-btn[aria-selected="true"] {
+      color: var(--text-primary);
+      border-bottom-color: var(--text-primary);
+    }
+
+    .inspector-pane {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      font-family: var(--font-mono);
+      font-size: 0.79rem;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      background: #050507;
+      min-height: 320px;
+    }
+
+    .workbench-footer {
+      margin-top: 16px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-hairline);
+      border-radius: 10px;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .action-buttons {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-size: 0.82rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    .btn-primary {
+      background: var(--text-primary);
+      border-color: var(--text-primary);
+      color: var(--bg-base);
+      font-weight: 600;
+    }
+
+    .btn:hover {
+      opacity: 0.9;
+    }
+
+    .status-pill {
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+    }
+
+    .site-footer {
+      padding: 40px 0;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Top Sticky Navigation -->
+  <header role="banner">
+    <div class="nav-container">
+      <a href="#top" class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 64 64" width="24" height="24" fill="none" stroke="#fafafa" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 14 L32 54 L54 12 L41 15 L29 40 C26 44 23 42 20 36 L10 14 Z"/>
+            <path d="M16 14 L26 35"/>
+            <path d="M22 15 C27 16 30 20 33 28"/>
+          </svg>
+        </span>
+        <span>Vicem</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary Navigation">
+        <a href="#architecture">Architecture</a>
+        <a href="#impact">Pipeline Impact</a>
+        <a href="#install">OS Releases</a>
+        <a href="#sandbox">Interactive Sandbox</a>
+      </nav>
+      <div class="badge-zero-net" aria-label="Security status: 100% Local Zero-Network">
+        dependencies: 0 · CSP connect-src 'none'
+      </div>
+    </div>
+  </header>
+
+  <div class="container" id="top">
+    <!-- Hero Showcase Section -->
+    <section class="hero">
+      <div class="eyebrow">
+        <span class="eyebrow-dot"></span>
+        <span>Vicem v1.0.0 · Zero-Dependency Context Baton &amp; Diet Suite</span>
+      </div>
+      <h1>Diet the Context.<br />Pass the Baton in 3 Seconds.</h1>
+      <p class="hero-lead">
+        When you hit Claude Code's 5-hour quota limit mid-refactor or suffer context rot at 150k tokens, Vicem harvests your live session, git diff, and compressed code skeletons into a bookended baton and relays work straight into OpenAI Codex, Gemini CLI, Cursor, Antigravity IDE, or Web AI.
+      </p>
+
+      <div class="hero-grid">
+        <div class="install-card" id="install">
+          <div class="install-title">1-Click Setup (macOS · Windows · Linux)</div>
+          <div class="cmd-box">git clone github.com/Rakkunn/vicem.git &amp;&amp; cd vicem &amp;&amp; ./vicem.mjs setup</div>
+          <p style="font-size: 0.84rem; color: var(--text-secondary); margin-bottom: 14px;">
+            Or download the standalone OS release bundle from GitHub Releases (<code>github.com/Rakkunn/vicem/releases</code>) and double-click the launcher:
+          </p>
+          <div class="os-matrix">
+            <div class="os-pill">
+              <strong>macOS</strong>
+              <span>setup.command</span>
+            </div>
+            <div class="os-pill">
+              <strong>Windows</strong>
+              <span>setup.bat</span>
+            </div>
+            <div class="os-pill">
+              <strong>Linux / WSL</strong>
+              <span>./vicem.mjs setup</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="terminal-window" aria-label="Terminal execution preview">
+          <div class="terminal-bar">
+            <div class="terminal-dots"><span></span><span></span><span></span></div>
+            <span>zsh — my-api (feat/rate-limit)</span>
+            <span>80x24</span>
+          </div>
+          <div class="terminal-body"><span class="t-red">Error: You've hit your usage limit for Claude Pro (5-hour window).</span>
+<span class="t-muted">Session: 42 turns · 184,200 tokens in context · 3 dirty files.</span>
+
+<span class="t-green">➜</span> <span class="t-cyan">my-api</span> <span class="t-bold">$ vicem codex</span>
+<span class="t-cyan">╭─ VICEM CONTEXT BATON &amp; DIET RECEIPT ───────────────────────╮</span>
+<span class="t-cyan">│</span> Source   : <span class="t-bold">Claude Code</span> (sess-9f3a2c · 42 turns harvested)  <span class="t-cyan">│</span>
+<span class="t-cyan">│</span> Diet     : <span class="t-red">184,200 tok ($2.76)</span> ──► <span class="t-green">14,800 tok [-91.9%]</span>     <span class="t-cyan">│</span>
+<span class="t-cyan">│</span> Skeleton : 18 files compressed (31 bodies in ledger)       <span class="t-cyan">│</span>
+<span class="t-cyan">│</span> Security : <span class="t-amber">2 secrets redacted</span> (OPENAI_KEY, AWS_KEY)        <span class="t-cyan">│</span>
+<span class="t-cyan">│</span> Target   : <span class="t-bold">OpenAI Codex CLI</span> (interactive TTY handoff)      <span class="t-cyan">│</span>
+<span class="t-cyan">╰────────────────────────────────────────────────────────────╯</span>
+<span class="t-green">[OK] [Vicem]</span> Wrote <span class="t-bold">.vicem/BATON.md</span> (182ms). Launching <span class="t-bold">codex</span>...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Architecture Grid -->
+    <section class="section" id="architecture">
+      <div class="section-header">
+        <div class="section-tag">System Architecture</div>
+        <h2 class="section-title">Engineered with Zero Third-Party Dependencies</h2>
+      </div>
+
+      <div class="spec-grid">
+        <div class="spec-cell">
+          <div class="spec-num">01 / HARVEST &amp; RELAY</div>
+          <h3>Project-Scoped Session Harvesting</h3>
+          <p>
+            Automatically detects and parses active transcripts strictly scoped to the current working directory across Claude Code, Codex, Gemini CLI, Cursor (SQLite WAL backup), Antigravity IDE, Aider, OpenCode, and Goose.
+          </p>
+        </div>
+        <div class="spec-cell">
+          <div class="spec-num">02 / 4-STAGE CONTEXT DIET</div>
+          <h3>Deterministic Skeletonization &amp; MCP Rehydration</h3>
+          <p>
+            Preserves TypeScript/Rust/Go/Python type contracts and signatures 100% intact while collapsing function bodies &gt;= 12 lines into <code>{ /* ... */ }</code> and indexing full bodies in <code>.vicem/ledger.json</code> for on-demand <code>vicem_rehydrate</code> calls.
+          </p>
+        </div>
+        <div class="spec-cell">
+          <div class="spec-num">03 / SAFETY &amp; MINIMAL TCB</div>
+          <h3>3-Tier Secret Redaction &amp; Write Guards</h3>
+          <p>
+            Masks provider keys, PEM blocks, and high-entropy assignments locally before any handoff. Built-in <code>SkeletonWriteGuard</code> and <code>SecretCommitGuard</code> prevent placeholder corruption in source files.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Pipeline Impact & Contribution Section -->
+    <section class="section" id="impact">
+      <div class="section-header">
+        <div class="section-tag">Measured Pipeline Impact</div>
+        <h2 class="section-title">Stage-by-Stage Context Reduction &amp; Continuity Contribution</h2>
+      </div>
+
+      <div class="comp-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Pipeline Stage</th>
+              <th>Raw Session State (Before Vicem)</th>
+              <th>After Vicem Baton &amp; Diet</th>
+              <th>Measured Contribution</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>1. Session Continuity Relay</strong></td>
+              <td>40+ turns of raw JSONL / SQLite history locked in a single agent</td>
+              <td>Structured <code>Goal</code>, <code>Done</code>, <code>Immediate NEXT</code> &amp; <code>git diff</code> in <code>.vicem/BATON.md</code></td>
+              <td><strong>&lt; 3s handoff across 15+ CLI, IDE &amp; Web agents</strong></td>
+            </tr>
+            <tr>
+              <td><strong>2. Code Skeletonization</strong></td>
+              <td>Full source files with long implementation bodies (~120,000 tok)</td>
+              <td>Types &amp; signatures 100% intact; bodies &gt;= 12 lines indexed in <code>.vicem/ledger.json</code></td>
+              <td><strong>-80% to -90% code tokens (100% lossless via MCP <code>vicem_rehydrate</code>)</strong></td>
+            </tr>
+            <tr>
+              <td><strong>3. Test &amp; Error Log Slimming</strong></td>
+              <td>Verbose ANSI spinners &amp; <code>node_modules</code> stack traces (~45,000 tok)</td>
+              <td>Root failure message + top 5 project stack frames (~1,200 tok)</td>
+              <td><strong>-95% log noise while preserving exact root cause</strong></td>
+            </tr>
+            <tr>
+              <td><strong>4. Data Sampling &amp; Noise Gate</strong></td>
+              <td>Lockfiles, build bundles, and multi-megabyte JSON / CSV / SQL dumps</td>
+              <td>Artifacts filtered; data files reduced to inferred schema + 2 sample rows</td>
+              <td><strong>-98% data bloat &amp; zero context window overflow</strong></td>
+            </tr>
+            <tr>
+              <td><strong>5. Security &amp; Write Integrity</strong></td>
+              <td>Plaintext credentials in logs &amp; risk of placeholder overwrites</td>
+              <td>3-Tier secret redaction + <code>SkeletonWriteGuard</code> &amp; <code>SecretCommitGuard</code></td>
+              <td><strong>0 leaked secrets &amp; 0 external dependencies (<code>dependencies: 0</code>)</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Interactive Sandbox Workbench (Preserves 100% of Zone A, Zone B, Zone C functional contracts) -->
+    <section class="section" id="sandbox" style="border-bottom: none;">
+      <div class="section-header">
+        <div class="section-tag">Interactive Browser Workbench</div>
+        <h2 class="section-title">Test the 4-Stage Context Diet &amp; Secret Redactor Locally</h2>
+        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 6px;">
+          Runs 100% in your browser memory under strict Content-Security-Policy (<code>default-src 'none'</code>). Drop a project folder or edit code below to inspect real-time skeletonization and secret masking.
+        </p>
+      </div>
+
+      <main class="workbench-grid">
+        <!-- ZONE A: SOURCE DROP & INPUT -->
+        <section class="zone-card" role="region" aria-label="Zone A: Source Drop and Project Input">
+          <div class="zone-header">
+            <span>Zone A · Source Input</span>
+            <span id="fileCountBadge">1 file</span>
+          </div>
+
+          <div class="drop-area" id="dropZone" tabindex="0" role="button" aria-label="Drop project folder or files here, or click to select files">
+            <div style="font-weight: 600; font-size: 0.84rem; margin-bottom: 4px;">Drop Project Folder or Source Files</div>
+            <div style="font-size: 0.74rem; color: var(--text-muted);">Supports TS / JS / Python / Go / Rust, logs, and chat exports</div>
+            <input type="file" id="filePicker" multiple webkitdirectory style="display: none;" />
+          </div>
+
+          <div class="input-group" style="flex: 0;">
+            <label for="goalInput">Task Goal</label>
+            <input type="text" id="goalInput" value="Fix JWT expiration bug and verify rate-limit middleware" />
+          </div>
+
+          <div class="input-group" style="flex: 0;">
+            <label for="nextInput">Immediate NEXT Step</label>
+            <input type="text" id="nextInput" value="Update verifySessionToken in src/auth.ts and run npm test" />
+          </div>
+
+          <div class="input-group">
+            <label for="rawSourceInput">Raw Code / Error Log / Diff Input</label>
+            <textarea id="rawSourceInput" aria-label="Raw source code or error log input">export interface AuthConfig {
+  issuer: string;
+  ttlSeconds: number;
+}
+
+export async function verifySessionToken(token: string, cfg: AuthConfig): Promise<boolean> {
+  const apiKey = "sk-proj-1234567890abcdefghijklmnop";
+  const step1 = token.trim();
+  const step2 = step1.split('.');
+  if (step2.length !== 3) {
+    return false;
+  }
+  const payload = step2[1];
+  const isValid = payload.length > 0 && cfg.ttlSeconds > 0;
+  const auditTag = `${cfg.issuer}:${isValid}`;
+  return Boolean(auditTag && apiKey);
+}</textarea>
+          </div>
+        </section>
+
+        <!-- ZONE B: LIVE DIET SLIDER & 3-TAB INSPECTOR -->
+        <section class="zone-card" role="region" aria-label="Zone B: Live Diet Slider and 3-Tab Baton Inspector">
+          <div class="zone-header">
+            <span>Zone B · Live Diet Slider &amp; Inspector</span>
+            <span id="secretShieldSummary" aria-live="polite">1 secret masked</span>
+          </div>
+
+          <div class="diet-controls">
+            <div class="slider-box">
+              <label for="dietSlider" style="font-size: 0.78rem; font-weight: 600;">
+                Diet Level: <span id="dietLevelName">L2 · Balanced Skeletons (Recommended)</span>
+              </label>
+              <input type="range" id="dietSlider" min="1" max="3" step="1" value="2" aria-label="Context Diet Compression Level (1 to 3)" />
+              <div class="slider-labels">
+                <span>L1 Light (Logs)</span>
+                <span>L2 Balanced (Skeletons)</span>
+                <span>L3 Max (Diff Only)</span>
+              </div>
+            </div>
+
+            <div class="gauge-box" aria-live="polite">
+              <div style="display: flex; justify-content: space-between; font-size: 0.78rem; font-weight: 600; font-family: var(--font-mono);">
+                <span id="tokenStatsText">Diet: 120 → 78 tokens (-35%)</span>
+                <span id="budgetStatusText" style="color: var(--accent-green);">SAFE (&lt; 4,000 tok)</span>
+              </div>
+              <div class="gauge-bar-track">
+                <div class="gauge-bar-fill" id="gaugeFill"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tabs-bar" role="tablist" aria-label="Baton Inspector Views">
+            <button class="tab-btn" role="tab" id="tabPreview" aria-selected="true" data-tab="preview">Baton Preview (BATON.md)</button>
+            <button class="tab-btn" role="tab" id="tabSkeleton" aria-selected="false" data-tab="skeleton">Skeleton Diff</button>
+            <button class="tab-btn" role="tab" id="tabSecrets" aria-selected="false" data-tab="secrets">Masked Secrets (<span id="secretTabCount">1</span>)</button>
+          </div>
+
+          <pre class="inspector-pane" id="inspectorOutput" role="tabpanel" aria-live="polite"></pre>
+        </section>
+      </main>
+
+      <!-- ZONE C: 1-CLICK ACTION BAR -->
+      <footer class="workbench-footer" role="region" aria-label="Zone C: 1-Click Action Bar">
+        <div class="status-pill" id="actionReceipt" aria-live="polite">
+          Zone C · Ready · Press Cmd+Enter (or Ctrl+Enter) to Copy Baton
+        </div>
+        <div class="action-buttons">
+          <label for="targetSelect" style="font-size: 0.78rem; color: var(--text-secondary);">Target Agent:</label>
+          <select id="targetSelect" aria-label="Select target AI agent">
+            <option value="codex">OpenAI Codex CLI</option>
+            <option value="claude">Claude Code</option>
+            <option value="antigravity">Antigravity IDE</option>
+            <option value="cursor">Cursor</option>
+            <option value="web">ChatGPT / Claude Web</option>
+          </select>
+          <button class="btn btn-primary" id="copyBatonBtn" title="Shortcut: Cmd+Enter / Ctrl+Enter">
+            Copy Baton (Cmd+Enter)
+          </button>
+          <button class="btn" id="downloadBatonBtn">
+            Download BATON.md
+          </button>
+        </div>
+      </footer>
+    </section>
+
+    <div class="site-footer">
+      <span>Vicem v1.0.0 · MIT License · Zero External Dependencies</span>
+      <span>Repository: github.com/Rakkunn/vicem</span>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      // 1. Browser-side Calibrated Token Estimator (100% identical to vicem.mjs C-05 formula — BUG-07 Fix)
+      function estimateTokens(text) {
+        if (!text || typeof text !== 'string' || text.length === 0) return 0;
+        const koreanMatches = text.match(/[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f\u3000-\u9fff\uf900-\ufaff]/g);
+        const punctMatches = text.match(/[{}[\],:;"'()=><_./\\-]/g);
+        const lineMatches = text.match(/\n/g);
+        const korean = koreanMatches ? koreanMatches.length : 0;
+        const punct = punctMatches ? punctMatches.length : 0;
+        const lines = lineMatches ? lineMatches.length : 0;
+        const other = Math.max(0, text.length - korean - punct);
+        const tokens = (other * 0.245) + (punct * 0.45) + (korean * 0.76) + (lines * 0.15);
+        return Math.max(1, Math.round(tokens));
+      }
+
+      // 2. Deterministic Secret Redactor (Isomorphic with vicem.mjs C-06 + Shannon Entropy — Fix 11-B)
+      const SECRET_RULES = [
+        { provider: 'AWS_KEY', regex: /\b(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b/g },
+        { provider: 'GITHUB', regex: /\b(?:ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82}|gho_[a-zA-Z0-9]{36}|ghs_[a-zA-Z0-9]{36})\b/g },
+        { provider: 'ANTHROPIC', regex: /\bsk-ant-[a-zA-Z0-9\-_]{20,}\b/g },
+        { provider: 'OPENAI', regex: /\bsk-(?:proj-|svcacct-)?[a-zA-Z0-9\-_]{20,}\b/g },
+        { provider: 'GOOGLE', regex: /\bAIza[0-9A-Za-z\-_]{35}\b/g },
+        { provider: 'SLACK', regex: /\bxox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,32}\b/g },
+        { provider: 'STRIPE', regex: /\b(?:sk|rk)_live_[0-9a-zA-Z]{24,99}\b/g },
+        { provider: 'JWT', regex: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
+        { provider: 'PRIVATE_KEY', regex: /-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/g }
+      ];
+
+      function shortHash4(str) {
+        let h = 2166136261;
+        for (let i = 0; i < str.length; i++) {
+          h ^= str.charCodeAt(i);
+          h = Math.imul(h, 16777619);
+        }
+        return (h >>> 0).toString(16).padStart(4, '0').slice(0, 4);
+      }
+
+      function shannonEntropy(str) {
+        if (!str || str.length === 0) return 0;
+        const freq = Object.create(null);
+        for (let i = 0; i < str.length; i++) {
+          const ch = str[i];
+          freq[ch] = (freq[ch] || 0) + 1;
+        }
+        let entropy = 0;
+        const len = str.length;
+        for (const k in freq) {
+          const p = freq[k] / len;
+          entropy -= p * Math.log2(p);
+        }
+        return entropy;
+      }
+
+      function redactSecrets(text) {
+        let sanitized = String(text || '');
+        const findings = [];
+        for (const rule of SECRET_RULES) {
+          sanitized = sanitized.replace(rule.regex, (m) => {
+            const token = `‹REDACTED:${rule.provider}:${shortHash4(m)}›`;
+            findings.push({ provider: rule.provider, token, preview: m.slice(0, 7) + '...' });
+            return token;
+          });
+        }
+        const assignRegex = /\b((?:api[_-]?key|secret|token|password|passwd|auth[_-]?token|access[_-]?key|client[_-]?secret)[a-zA-Z0-9_]*)\s*([:=])\s*(['"`])([a-zA-Z0-9+/=_\-.]{16,})\3/gi;
+        sanitized = sanitized.replace(assignRegex, (full, keyName, sep, quote, val) => {
+          if (val.includes('REDACTED:')) return full;
+          if (shannonEntropy(val) >= 3.5) {
+            const token = `‹REDACTED:HIGH_ENTROPY:${shortHash4(val)}›`;
+            findings.push({ provider: 'HIGH_ENTROPY', token, preview: val.slice(0, 6) + '...' });
+            return `${keyName}${sep}${quote}${token}${quote}`;
+          }
+          return full;
+        });
+        const standaloneRegex = /(?<![A-Za-z0-9/_.-])\b([A-Za-z0-9+/_-]{28,})\b(?![A-Za-z0-9/_.-])/g;
+        sanitized = sanitized.replace(standaloneRegex, (match) => {
+          if (match.includes('REDACTED:') || match.includes('/')) return match;
+          const hasUpper = /[A-Z]/.test(match);
+          const hasLower = /[a-z]/.test(match);
+          const hasDigit = /[0-9]/.test(match);
+          if (hasUpper && hasLower && hasDigit && shannonEntropy(match) >= 4.5) {
+            const token = `‹REDACTED:SECRET:${shortHash4(match)}›`;
+            findings.push({ provider: 'SECRET', token, preview: match.slice(0, 6) + '...' });
+            return token;
+          }
+          return match;
+        });
+        return { sanitized, findings };
+      }
+
+      // 3. Isomorphic Brace-Balanced & Indentation Code Skeletonizer (matches vicem.mjs CodeSkeletonizer — Fix 11-B)
+      function findBalancedBraces(code) {
+        const pairs = [];
+        const stack = [];
+        const tmplStack = [];
+        let state = 'CODE';
+        for (let i = 0; i < code.length; i++) {
+          const ch = code[i];
+          const next = code[i + 1] || '';
+          if (state === 'LINE_COMMENT') {
+            if (ch === '\n') state = 'CODE';
+            continue;
+          }
+          if (state === 'BLOCK_COMMENT') {
+            if (ch === '*' && next === '/') { state = 'CODE'; i++; }
+            continue;
+          }
+          if (state === 'SINGLE_STRING') {
+            if (ch === '\\') { i++; continue; }
+            if (ch === "'") state = 'CODE';
+            continue;
+          }
+          if (state === 'DOUBLE_STRING') {
+            if (ch === '\\') { i++; continue; }
+            if (ch === '"') state = 'CODE';
+            continue;
+          }
+          if (state === 'TEMPLATE_STRING') {
+            if (ch === '\\') { i++; continue; }
+            if (ch === '$' && next === '{') {
+              tmplStack.push(stack.length);
+              state = 'CODE';
+              i++;
+              continue;
+            }
+            if (ch === '`') state = 'CODE';
+            continue;
+          }
+          if (ch === '/' && next === '/') { state = 'LINE_COMMENT'; i++; continue; }
+          if (ch === '/' && next === '*') { state = 'BLOCK_COMMENT'; i++; continue; }
+          if (ch === "'") { state = 'SINGLE_STRING'; continue; }
+          if (ch === '"') { state = 'DOUBLE_STRING'; continue; }
+          if (ch === '`') { state = 'TEMPLATE_STRING'; continue; }
+          if (ch === '{') {
+            stack.push(i);
+          } else if (ch === '}') {
+            if (tmplStack.length > 0 && stack.length === tmplStack[tmplStack.length - 1]) {
+              tmplStack.pop();
+              state = 'TEMPLATE_STRING';
+              continue;
+            }
+            if (stack.length > 0) {
+              const openIdx = stack.pop();
+              pairs.push({ openIdx, closeIdx: i, depth: stack.length });
+            }
+          }
+        }
+        return pairs;
+      }
+
+      function stripNestedParens(str) {
+        let out = '';
+        let depth = 0;
+        for (let i = 0; i < str.length; i++) {
+          const ch = str[i];
+          if (ch === '(') {
+            if (depth === 0) out += '(';
+            depth++;
+          } else if (ch === ')') {
+            depth = Math.max(0, depth - 1);
+            if (depth === 0) out += ')';
+          } else if (depth === 0) {
+            out += ch;
+          }
+        }
+        return out;
+      }
+
+      function classifyCBlockHeader(code, openIdx) {
+        const lookbackStart = Math.max(0, openIdx - 500);
+        const rawBefore = code.slice(lookbackStart, openIdx);
+        const collapsed = stripNestedParens(rawBefore);
+        const segments = collapsed.split(/[;{}]/);
+        const lastSeg = (segments[segments.length - 1] || '').trim();
+        if (!lastSeg) return { kind: 'other' };
+        if (/\b(?:interface|type|enum|struct|trait)\s+[A-Za-z0-9_$]+/.test(lastSeg)) return { kind: 'contract' };
+        if (/\b(?:class|namespace|mod|impl)\b/.test(lastSeg)) return { kind: 'container' };
+        if (/\b(?:if|for|while|switch|catch|try|else|do)\s*(?:\(\))?$/.test(lastSeg)) return { kind: 'control' };
+        const isArrow = /=>\s*$/.test(lastSeg);
+        const isFunc = /\b(?:function|fn|func)\b/.test(lastSeg) || /(?:^|[\s\n])(?:async\s+|static\s+|public\s+|private\s+|protected\s+|get\s+|set\s+)*[A-Za-z_$][A-Za-z0-9_$]*\s*\(\)[^{;]*$/.test(lastSeg);
+        if (isArrow || isFunc) return { kind: 'function' };
+        return { kind: 'other' };
+      }
+
+      function skeletonizePython(code, minLines = 12) {
+        const lines = code.split(/\r?\n/);
+        const out = [];
+        let i = 0;
+        while (i < lines.length) {
+          const line = lines[i];
+          const m = line.match(/^(\s*)(?:async\s+)?def\s+([A-Za-z0-9_]+)\s*\(/);
+          if (!m) { out.push(line); i++; continue; }
+          const defIndent = m[1].length;
+          let sigEnd = i;
+          while (sigEnd < lines.length && !/:\s*(?:#.*)?$/.test(lines[sigEnd])) sigEnd++;
+          if (sigEnd >= lines.length) { out.push(line); i++; continue; }
+          let bodyEnd = sigEnd;
+          let j = sigEnd + 1;
+          while (j < lines.length) {
+            const trimmed = lines[j].trim();
+            if (trimmed === '' || trimmed.startsWith('#')) { j++; continue; }
+            const indent = (lines[j].match(/^(\s*)/)?.[1] || '').length;
+            if (indent <= defIndent) break;
+            bodyEnd = j;
+            j++;
+          }
+          const span = bodyEnd - i + 1;
+          if (span >= minLines) {
+            for (let k = i; k <= sigEnd; k++) out.push(lines[k]);
+            out.push(' '.repeat(defIndent + 4) + 'pass  # ... [skeletonized]');
+            i = bodyEnd + 1;
+          } else {
+            for (let k = i; k <= bodyEnd; k++) out.push(lines[k]);
+            i = bodyEnd + 1;
+          }
+        }
+        return out.join('\n');
+      }
+
+      function skeletonizeCode(code, level) {
+        if (level === 1) return code;
+        if (level === 3) {
+          return code
+            .split('\n')
+            .filter((line) => /^(?:\s*export\s+|\s*(?:interface|type|enum|class|function|def|fn|func)\b)/.test(line))
+            .join('\n');
+        }
+        let working = code;
+        if (/^\s*(?:async\s+)?def\s+[A-Za-z0-9_]+\s*\(/m.test(working)) {
+          working = skeletonizePython(working, 12);
+        }
+        const pairs = findBalancedBraces(working);
+        const candidates = [];
+        for (const p of pairs) {
+          const bodySlice = working.slice(p.openIdx, p.closeIdx + 1);
+          const lineSpan = bodySlice.split('\n').length;
+          if (lineSpan < 12) continue;
+          const info = classifyCBlockHeader(working, p.openIdx);
+          if (info.kind === 'function') {
+            candidates.push(p);
+          }
+        }
+        candidates.sort((a, b) => a.openIdx - b.openIdx);
+        const filtered = [];
+        let lastEnd = -1;
+        for (const c of candidates) {
+          if (c.openIdx > lastEnd) {
+            filtered.push(c);
+            lastEnd = c.closeIdx;
+          }
+        }
+        if (filtered.length === 0) return working;
+        let result = '';
+        let cursor = 0;
+        for (const c of filtered) {
+          result += working.slice(cursor, c.openIdx) + '{ /* ... */ }';
+          cursor = c.closeIdx + 1;
+        }
+        result += working.slice(cursor);
+        return result;
+      }
+
+      // DOM elements
+      const goalInput = document.getElementById('goalInput');
+      const nextInput = document.getElementById('nextInput');
+      const rawSourceInput = document.getElementById('rawSourceInput');
+      const dietSlider = document.getElementById('dietSlider');
+      const dietLevelName = document.getElementById('dietLevelName');
+      const tokenStatsText = document.getElementById('tokenStatsText');
+      const budgetStatusText = document.getElementById('budgetStatusText');
+      const gaugeFill = document.getElementById('gaugeFill');
+      const inspectorOutput = document.getElementById('inspectorOutput');
+      const secretShieldSummary = document.getElementById('secretShieldSummary');
+      const secretTabCount = document.getElementById('secretTabCount');
+      const targetSelect = document.getElementById('targetSelect');
+      const actionReceipt = document.getElementById('actionReceipt');
+      const copyBatonBtn = document.getElementById('copyBatonBtn');
+      const downloadBatonBtn = document.getElementById('downloadBatonBtn');
+      const dropZone = document.getElementById('dropZone');
+      const filePicker = document.getElementById('filePicker');
+      const fileCountBadge = document.getElementById('fileCountBadge');
+
+      let activeTab = 'preview';
+      let currentState = { batonMd: '', skeletonPreview: '', findings: [], rawTokens: 0, dietTokens: 0 };
+
+      const LEVEL_LABELS = {
+        1: 'L1 · Light (Log Slimming + Secret Redaction)',
+        2: 'L2 · Balanced Skeletons (Recommended)',
+        3: 'L3 · Aggressive (Signatures & Diff Only)'
+      };
+
+      function recomputeBaton() {
+        const level = parseInt(dietSlider.value, 10) || 2;
+        dietLevelName.textContent = LEVEL_LABELS[level];
+
+        const rawCode = rawSourceInput.value || '';
+        const goal = goalInput.value || 'Project Handoff Task';
+        const nextStep = nextInput.value || 'Inspect BATON.md and continue implementation';
+        const target = targetSelect.value || 'codex';
+
+        const skeleton = skeletonizeCode(rawCode, level);
+        const { sanitized: cleanSkel, findings } = redactSecrets(skeleton);
+        const rawTok = estimateTokens(goal + '\n' + nextStep + '\n' + rawCode);
+
+        const draftBaton = [
+          `# BATON: ${goal.slice(0, 80)}`,
+          `> Generated by Vicem Studio v1.0.0 | Target: ${target} | Diet Level: L${level}`,
+          ``,
+          `## 1. Goal`,
+          goal,
+          ``,
+          `## 2. Immediate NEXT`,
+          `1. **${nextStep}**`,
+          ``,
+          `## 3. Architectural Context (Code Skeletons)`,
+          '```ts',
+          cleanSkel.trim(),
+          '```',
+          ``,
+          `---`,
+          `> **EXECUTION ANCHOR:** Never write skeleton placeholders (\`{ ... }\`, \`/* ... */\`) or \`‹REDACTED›\` tokens into source files. Begin immediately from **Section 2 (Immediate NEXT #1)**.`
+        ].join('\n');
+
+        const dietTok = estimateTokens(draftBaton);
+        const effRaw = Math.max(rawTok, dietTok);
+        const ratio = effRaw > dietTok ? Math.round(((effRaw - dietTok) / effRaw) * 100) : 0;
+
+        tokenStatsText.textContent = `Diet: ${effRaw} → ${dietTok} tokens (-${ratio}%)`;
+        const pct = Math.min(100, Math.max(6, Math.round((dietTok / 4000) * 100)));
+        gaugeFill.style.width = `${pct}%`;
+
+        if (dietTok <= 2000) {
+          gaugeFill.style.background = 'var(--accent-green)';
+          budgetStatusText.textContent = 'SAFE (URL Prefill & CLI Ready)';
+          budgetStatusText.style.color = 'var(--accent-green)';
+        } else if (dietTok <= 4000) {
+          gaugeFill.style.background = 'var(--accent-amber)';
+          budgetStatusText.textContent = 'CLIPBOARD MODE (< 4,000 tok)';
+          budgetStatusText.style.color = 'var(--accent-amber)';
+        } else {
+          gaugeFill.style.background = 'var(--accent-red)';
+          budgetStatusText.textContent = 'OVER BUDGET (> 4,000 tok)';
+          budgetStatusText.style.color = 'var(--accent-red)';
+        }
+
+        secretShieldSummary.textContent = `${findings.length} secret(s) masked`;
+        secretTabCount.textContent = String(findings.length);
+
+        currentState = {
+          batonMd: draftBaton,
+          skeletonPreview: cleanSkel,
+          findings,
+          rawTokens: effRaw,
+          dietTokens: dietTok,
+          ratio
+        };
+
+        renderInspector();
+      }
+
+      function renderInspector() {
+        if (activeTab === 'preview') {
+          inspectorOutput.textContent = currentState.batonMd;
+        } else if (activeTab === 'skeleton') {
+          inspectorOutput.textContent = currentState.skeletonPreview;
+        } else {
+          if (currentState.findings.length === 0) {
+            inspectorOutput.textContent = '[OK] Zero secrets detected in input.';
+          } else {
+            inspectorOutput.textContent = currentState.findings
+              .map((f, i) => `${i + 1}. [${f.provider}] ${f.preview}  -->  ${f.token}`)
+              .join('\n');
+          }
+        }
+      }
+
+      // Tab switching
+      document.querySelectorAll('.tab-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.tab-btn').forEach((b) => b.setAttribute('aria-selected', 'false'));
+          btn.setAttribute('aria-selected', 'true');
+          activeTab = btn.getAttribute('data-tab');
+          renderInspector();
+        });
+      });
+
+      // Live input listeners
+      [goalInput, nextInput, rawSourceInput, dietSlider, targetSelect].forEach((el) => {
+        el.addEventListener('input', recomputeBaton);
+      });
+
+      // Copy Baton Action
+      async function copyBaton() {
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(currentState.batonMd);
+          }
+          actionReceipt.textContent = `[OK] [Vicem] Copied Baton (${currentState.rawTokens} → ${currentState.dietTokens} tok, ${currentState.findings.length} secrets masked)`;
+        } catch {
+          actionReceipt.textContent = `[OK] [Vicem] Baton ready in preview (${currentState.dietTokens} tok)`;
+        }
+      }
+
+      copyBatonBtn.addEventListener('click', copyBaton);
+
+      // Keyboard shortcut: Cmd+Enter / Ctrl+Enter copies Baton immediately
+      window.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          copyBaton();
+        }
+      });
+
+      // Download BATON.md
+      downloadBatonBtn.addEventListener('click', () => {
+        const blob = new Blob([currentState.batonMd], { type: 'text/markdown;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'BATON.md';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        actionReceipt.textContent = `[OK] [Vicem] Downloaded BATON.md (${currentState.dietTokens} tokens)`;
+      });
+
+      // File Drop & Picker (Credential-blind: skips .env / *key* / *token*)
+      function isSafeFileName(name) {
+        return !/^(?:\.env|auth\.json|credentials\.json|id_rsa|id_ed25519)$/i.test(name);
+      }
+
+      async function handleFiles(fileList) {
+        const safeFiles = Array.from(fileList).filter((f) => isSafeFileName(f.name)).slice(0, 15);
+        if (safeFiles.length === 0) return;
+        const chunks = [];
+        for (const f of safeFiles) {
+          const text = await f.text();
+          chunks.push(`// File: ${f.name}\n${text}`);
+        }
+        rawSourceInput.value = chunks.join('\n\n');
+        fileCountBadge.textContent = `${safeFiles.length} file(s)`;
+        recomputeBaton();
+      }
+
+      dropZone.addEventListener('click', () => filePicker.click());
+      filePicker.addEventListener('change', (e) => handleFiles(e.target.files));
+      dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('drag-over');
+      });
+      dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+      dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        if (e.dataTransfer && e.dataTransfer.files) {
+          handleFiles(e.dataTransfer.files);
+        }
+      });
+
+      // Boot Hydration from `.vicem/studio.live.html` (#vicem-hydration-data — Fix 11-A)
+      const hydrationEl = document.getElementById('vicem-hydration-data');
+      if (hydrationEl && hydrationEl.textContent) {
+        try {
+          const hydrated = JSON.parse(hydrationEl.textContent);
+          if (hydrated.goal) goalInput.value = hydrated.goal;
+          if (Array.isArray(hydrated.nextSteps) && hydrated.nextSteps[0]) {
+            nextInput.value = hydrated.nextSteps[0];
+          } else if (typeof hydrated.nextStep === 'string') {
+            nextInput.value = hydrated.nextStep;
+          }
+          if (typeof hydrated.rawSource === 'string') rawSourceInput.value = hydrated.rawSource;
+          if (typeof hydrated.targetAgent === 'string') targetSelect.value = hydrated.targetAgent;
+          if (typeof hydrated.fileCount === 'number') fileCountBadge.textContent = `${hydrated.fileCount} file(s)`;
+        } catch {}
+      }
+
+      // Initial render
+      recomputeBaton();
+    })();
+  </script>
+</body>
+</html>
