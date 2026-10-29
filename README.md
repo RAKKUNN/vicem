@@ -11,15 +11,15 @@
 <p align="left">
   <a href="https://glama.ai/mcp/servers/RAKKUNN/vicem"><img src="https://glama.ai/mcp/servers/RAKKUNN/vicem/badges/score.svg" alt="Vicem MCP server rated A on Glama" /></a>
   <a href="https://mcpservers.org/servers/rakkunn/vicem"><img src="https://mcpservers.org/badge.svg" alt="Listed on mcpservers.org" /></a>
-  <a href="https://www.npmjs.com/package/@rakkunn/vicem"><img src="https://img.shields.io/npm/v/@rakkunn/vicem?color=CB3837&label=npm%20(@rakkunn/vicem)" alt="npm @rakkunn/vicem" /></a>
-  <a href="https://github.com/RAKKUNN/vicem/releases/tag/v1.1.0"><img src="https://img.shields.io/badge/release-v1.1.0%20(Desktop%20GUI)-10B981" alt="Release v1.1.0" /></a>
+  <a href="https://www.npmjs.com/package/vicem-cli"><img src="https://img.shields.io/npm/v/vicem-cli?color=CB3837&label=npm%20(vicem-cli)" alt="npm vicem-cli" /></a>
+  <a href="https://github.com/RAKKUNN/vicem/releases/tag/v1.1.2"><img src="https://img.shields.io/badge/release-v1.1.2%20(Kinetic%20GUI)-10B981" alt="Release v1.1.2" /></a>
   <img src="https://img.shields.io/badge/dependencies-0-3B82F6" alt="Zero Dependencies" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-F59E0B" alt="MIT License" /></a>
 </p>
 
 > **Hit Claude Code's 5-hour quota mid-feature? Or watching Cursor / Codex slow to a crawl after 150k tokens of context rot?**
 >
-> **Vicem** compacts your active coding session by **80–90%** (via deterministic code skeletonization + lossless MCP on-demand rehydration) and hands off a clean `.vicem/BATON.md` across **Claude Code, Cursor, Codex CLI, Gemini CLI, Windsurf, Antigravity IDE, and Web AI** in 3 seconds — with **`0` npm dependencies** and **`0` network calls**.
+> **Vicem** compacts your active coding session by **80–99%** (via deterministic AST code skeletonization + lossless MCP on-demand rehydration) and hands off a clean `.vicem/BATON.md` across **Claude Code, Cursor, Codex CLI, Gemini CLI, Windsurf, Antigravity IDE, and Web AI** in 3 seconds — with **`0` npm dependencies** and **`0` network calls**.
 >
 > ⭐ **Tip:** Click **Star** (top-right) to bookmark this repo for the next time your coding agent hits a 5-hour quota limit or context rot.
 
@@ -27,27 +27,27 @@
 
 ## ⚡ 10-Second Quick Start (`npx` — Zero Install)
 
-### 1. Run the Local Web Studio GUI or Pass a Baton Immediately
+### 1. Run the Local Desktop Utility GUI or Pass a Baton Immediately
 ```bash
-# Launch the local 3-column Desktop Utility GUI (12 agents, live token/quota telemetry)
-npx -y @rakkunn/vicem gui
+# Launch the local Desktop Utility GUI (12 agents, 4-stage pipeline inspector, live token/quota HUD)
+npx -y vicem-cli gui
 
 # Or pack a compressed baton from your current repo & hand off in 1 command
-npx -y @rakkunn/vicem codex
-npx -y @rakkunn/vicem claude
-npx -y @rakkunn/vicem cursor
+npx -y vicem-cli codex
+npx -y vicem-cli claude
+npx -y vicem-cli cursor
 
 # Or auto-configure global `vicem` CLI + MCP servers across all installed agents
-npx -y @rakkunn/vicem setup
+npx -y vicem-cli setup
 ```
 
 ### 2. Add as an MCP Server in 1 Line (Claude Code / Codex / Cursor)
 ```bash
 # Claude Code
-claude mcp add vicem -- npx -y @rakkunn/vicem mcp
+claude mcp add vicem -- npx -y vicem-cli mcp
 
 # OpenAI Codex CLI
-codex mcp add vicem -- npx -y @rakkunn/vicem mcp
+codex mcp add vicem -- npx -y vicem-cli mcp
 ```
 
 <details>
@@ -60,7 +60,7 @@ Add to `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`, or `claude_d
   "mcpServers": {
     "vicem": {
       "command": "npx",
-      "args": ["-y", "@rakkunn/vicem", "mcp"]
+      "args": ["-y", "vicem-cli", "mcp"]
     }
   }
 }
@@ -69,7 +69,7 @@ Add to `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`, or `claude_d
 
 <p align="left">
   <a href="https://rakkunn.github.io/vicem/"><strong>🌐 Try Zero-Install Browser Sandbox (GitHub Pages)</strong></a> ·
-  <a href="https://www.npmjs.com/package/@rakkunn/vicem"><strong>📦 npm (@rakkunn/vicem)</strong></a> ·
+  <a href="https://www.npmjs.com/package/vicem-cli"><strong>📦 npm (vicem-cli / @rakkunn/vicem)</strong></a> ·
   <a href="./SECURITY.md"><strong>🔒 Security &amp; Zero-Network Proof</strong></a>
 </p>
 
@@ -88,7 +88,7 @@ Add to `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`, or `claude_d
 ![Vicem 3-Second Context Baton & Diet Demo](./demo.gif)
 
 ```text
-$ npx -y @rakkunn/vicem codex
+$ npx -y vicem-cli codex
 
   ╭─ VICEM CONTEXT BATON & DIET RECEIPT ──────────────────────────────────╮
   │ Source Session : Claude Code (sess-9f3a2c · 42 turns harvested)       │

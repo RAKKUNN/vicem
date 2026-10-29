@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Vicem Desktop Command Center (v9 — Real Native App Launcher + Step-by-Step Verification Receipt)
+ * Vicem Desktop Command Center (v17 - Gamified Tactical Context Relay & Diet Cockpit)
  * - Default Auto-Open ON: clicking "Hand off ->" actually launches the target agent on macOS:
  *   - Claude Code / OpenAI Codex: generates an executable `.vicem/launch-<agent>.command` with full
  *     binary path (`~/.local/bin/claude` or `~/.local/bin/codex`), `cd`s into the workspace, passes
@@ -28,6 +28,10 @@ import {
   BatonIaBuilder,
   RuleMountAdapter,
   ClipboardAdapter,
+  DietLedger,
+  CodeSkeletonizer,
+  StalenessDriftGuard,
+  TokenEstimator,
   VicemApp,
 } from './vicem.mjs';
 
@@ -59,7 +63,7 @@ const LOGO_LIGHT_PATH =
   ].find((p) => fs.existsSync(p)) || path.resolve(__dirname, 'logo-light-transparent.png');
 
 function shortenHome(fullPath, home) {
-  if (!fullPath) return '—';
+  if (!fullPath) return '-';
   if (fullPath.startsWith(home)) {
     return '~' + fullPath.slice(home.length);
   }
@@ -67,7 +71,7 @@ function shortenHome(fullPath, home) {
 }
 
 function formatAgo(mtimeMs) {
-  if (!mtimeMs) return '—';
+  if (!mtimeMs) return '-';
   const diffSec = Math.max(1, Math.floor((Date.now() - mtimeMs) / 1000));
   if (diffSec < 60) return 'Just now';
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
@@ -89,6 +93,27 @@ function formatResetShort(resetEpochSec) {
 
 function shellQuote(value) {
   return "'" + String(value).replaceAll("'", "'\"'\"'") + "'";
+}
+
+function readHeadAndTailUtf8(filePath, headBytes = 24576, tailBytes = 98304) {
+  try {
+    const st = fs.statSync(filePath);
+    if (st.size <= headBytes + tailBytes) {
+      return fs.readFileSync(filePath, 'utf8');
+    }
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const headBuf = Buffer.alloc(headBytes);
+      const tailBuf = Buffer.alloc(tailBytes);
+      fs.readSync(fd, headBuf, 0, headBytes, 0);
+      fs.readSync(fd, tailBuf, 0, tailBytes, st.size - tailBytes);
+      return headBuf.toString('utf8') + '\n' + tailBuf.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return '';
+  }
 }
 
 function getIdeUserDir(ideName, home) {
@@ -137,7 +162,16 @@ function openExternalCrossPlatform(urlOrPath, macAppPath = null) {
   return spawnSync('xdg-open', [urlOrPath], { encoding: 'utf8' });
 }
 
+const binaryCache = new Map();
+
 function resolveAgentBinary(agentId, home) {
+  if (binaryCache.has(agentId)) return binaryCache.get(agentId);
+  const found = resolveAgentBinaryUncached(agentId, home);
+  binaryCache.set(agentId, found);
+  return found;
+}
+
+function resolveAgentBinaryUncached(agentId, home) {
   const isWin = process.platform === 'win32';
   const exts = isWin ? ['.exe', '.cmd', '.bat', ''] : [''];
 
@@ -194,20 +228,22 @@ function resolveAgentBinary(agentId, home) {
     return null;
   }
 
-  // Unix/macOS login shell lookup
+  // Fast zero-spawn Unix/macOS PATH + standard bin lookup
   const binName = agentId === 'vscode' ? 'code' : agentId === 'antigravity' ? 'agy' : agentId;
-  try {
-    const shellBin = process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh';
-    const found = execSync(`${shellBin} -lic 'command -v ${binName}'`, {
-      encoding: 'utf8',
-      timeout: 3000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-      .trim()
-      .split('\n')
-      .pop();
-    if (found && found.startsWith('/') && fs.existsSync(found)) return found;
-  } catch {}
+  const searchDirs = [
+    path.join(home, '.local', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    ...(process.env.PATH || '').split(path.delimiter),
+  ];
+  for (const dir of searchDirs) {
+    if (!dir) continue;
+    const candidate = path.join(dir, binName);
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    } catch {}
+  }
   return null;
 }
 
@@ -340,7 +376,7 @@ function collectRealAgentTelemetry(home) {
       recentFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
       if (recentFiles[0]) {
         agyLatestMtime = recentFiles[0].mtimeMs;
-        const raw = fs.readFileSync(recentFiles[0].path, 'utf8');
+        const raw = readHeadAndTailUtf8(recentFiles[0].path);
         const wsMatch = raw.match(/Command Working Directory:\s*(\/[^\n\\<"]+)/);
         if (wsMatch && wsMatch[1] && fs.existsSync(wsMatch[1].trim())) {
           agyLatestWorkspace = wsMatch[1].trim();
@@ -796,23 +832,25 @@ function collectRealAgentTelemetry(home) {
 let selectedProjectRoot = DEFAULT_PROJECT_ROOT;
 let customGoalOverride = '';
 let manualActiveAgent = null;
+let selectedSourceSessionId = null;
 let lastHandedOffFrom = null;
 let lastHandoffReceipt = null;
 let cachedTelemetry = null;
 let cachedTelemetryAt = 0;
+const customWorkspacePaths = new Set();
 
 /**
- * Harvests rich, multi-turn conversation history, tool actions, and active files
- * from the real session logs of Antigravity, Claude Code, or OpenAI Codex for `projectRoot`.
+ * Discovers all real sessions belonging to `projectRoot` across Antigravity, Claude Code,
+ * OpenAI Codex, Cursor/VS Code/Windsurf, plus the live Git Working Tree.
  */
-function harvestRichProjectContext(projectRoot, home, git) {
-  const userTimeline = [];
-  const assistantDigest = [];
-  const touchedFiles = new Set();
-  let rawSessionBytes = 0;
-  let sessionId = 'live-session';
+function discoverProjectSessions(projectRoot, home, git) {
+  const sessions = [];
+  const pathRegex = new RegExp(
+    projectRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\/([A-Za-z0-9_./-]+\\.[A-Za-z0-9]+)',
+    'g'
+  );
 
-  // 1. Scan Antigravity brain transcripts sorted by mtimeMs (descending)
+  // 1. Antigravity Brain Transcripts for this projectRoot
   const brainDir = path.join(home, '.gemini', 'antigravity', 'brain');
   try {
     if (fs.existsSync(brainDir)) {
@@ -827,94 +865,343 @@ function harvestRichProjectContext(projectRoot, home, git) {
         } catch {}
       }
       candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-      for (const c of candidates.slice(0, 10)) {
-        const raw = fs.readFileSync(c.path, 'utf8');
-        if (!raw.includes(projectRoot)) continue;
-        rawSessionBytes = c.size;
-        sessionId = c.id;
-        const lines = raw.trim().split('\n');
-        const pathRegex = new RegExp(
-          projectRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\/([A-Za-z0-9_./-]+\\.[A-Za-z0-9]+)',
-          'g'
-        );
-        for (const line of lines.slice(-160)) {
-          for (const pm of line.matchAll(pathRegex)) {
-            const rel = pm[1];
-            if (rel && !rel.startsWith('.vicem') && !['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'].includes(rel)) {
-              touchedFiles.add(rel);
+      for (const c of candidates.slice(0, 14)) {
+        try {
+          const raw = readHeadAndTailUtf8(c.path);
+          if (!raw.includes(projectRoot)) continue;
+          const prompts = [];
+          const assistantDigest = [];
+          const touched = new Set();
+          const lines = raw.trim().split('\n');
+          for (const line of lines.slice(-160)) {
+            for (const pm of line.matchAll(pathRegex)) {
+              const rel = pm[1];
+              if (rel && !rel.startsWith('.vicem') && !['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'].includes(rel)) {
+                touched.add(rel);
+              }
             }
-          }
-          try {
-            const step = JSON.parse(line);
-            if (step.type === 'USER_INPUT' && typeof step.content === 'string') {
-              const m = step.content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
-              const text = (m ? m[1] : step.content).replace(/\s+/g, ' ').trim();
-              if (text && text.length > 1 && !text.startsWith('<')) {
-                userTimeline.push(text.slice(0, 180));
-              }
-            } else if (step.type === 'PLANNER_RESPONSE') {
-              if (typeof step.content === 'string' && step.content.trim()) {
-                const firstPara = step.content
-                  .trim()
-                  .split(/\n\n+/)[0]
-                  .replace(/\s+/g, ' ')
-                  .slice(0, 220);
-                if (firstPara) assistantDigest.push(firstPara);
-              }
-              if (Array.isArray(step.tool_calls)) {
-                for (const tc of step.tool_calls) {
-                  const args = tc.arguments || tc.input || {};
-                  const p = args.Path || args.path || args.file_path || args.TargetFile;
-                  if (typeof p === 'string' && p.startsWith(projectRoot)) {
-                    const rel = path.relative(projectRoot, p).replace(/\\/g, '/');
-                    if (rel && !rel.startsWith('..') && !['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'].includes(rel)) {
-                      touchedFiles.add(rel);
+            try {
+              const step = JSON.parse(line);
+              if (step.type === 'USER_INPUT' && typeof step.content === 'string') {
+                const m = step.content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
+                const text = (m ? m[1] : step.content).replace(/\s+/g, ' ').trim();
+                if (text && text.length > 2 && !text.startsWith('<')) {
+                  prompts.push(text.slice(0, 180));
+                }
+              } else if (step.type === 'PLANNER_RESPONSE') {
+                if (typeof step.content === 'string' && step.content.trim()) {
+                  const firstPara = step.content
+                    .trim()
+                    .split(/\n\n+/)[0]
+                    .replace(/\s+/g, ' ')
+                    .slice(0, 220);
+                  if (firstPara) assistantDigest.push(firstPara);
+                }
+                if (Array.isArray(step.tool_calls)) {
+                  for (const tc of step.tool_calls) {
+                    const args = tc.arguments || tc.input || {};
+                    const p = args.Path || args.path || args.file_path || args.TargetFile;
+                    if (typeof p === 'string' && p.startsWith(projectRoot)) {
+                      const rel = path.relative(projectRoot, p).replace(/\\/g, '/');
+                      if (rel && !rel.startsWith('..') && !['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'].includes(rel)) {
+                        touched.add(rel);
+                      }
                     }
                   }
                 }
               }
-            }
-          } catch {}
-        }
-        break;
+            } catch {}
+          }
+          const substantive = prompts.filter(
+            (u) => u.length >= 6 && !/^(ok|okay|yes|yep|sure|go|k|y|thx|thanks)$/i.test(u.trim())
+          );
+          const title = substantive[substantive.length - 1] || prompts[prompts.length - 1] || `Session ${c.id.slice(0, 8)}`;
+          sessions.push({
+            id: `agy:${c.id}`,
+            rawId: c.id,
+            agentId: 'antigravity',
+            agentName: 'Antigravity',
+            model: 'Antigravity IDE',
+            title,
+            prompts: prompts.slice(-6),
+            assistantDigest: assistantDigest.slice(-3),
+            touchedFiles: [...touched],
+            mtimeMs: c.mtimeMs,
+            ago: formatAgo(c.mtimeMs),
+            rawBytes: c.size,
+            sourceFile: shortenHome(c.path, home),
+          });
+        } catch {}
       }
     }
   } catch {}
 
-  // 2. Fallback: Check Claude Code project sessions if no Antigravity timeline found
-  if (userTimeline.length === 0) {
-    const encoded = projectRoot.replace(/[^a-zA-Z0-9]/g, '-');
-    const claudeProjDir = path.join(home, '.claude', 'projects', encoded);
-    try {
-      if (fs.existsSync(claudeProjDir)) {
-        const files = fs
-          .readdirSync(claudeProjDir)
-          .filter((f) => f.endsWith('.jsonl'))
-          .map((f) => {
-            const full = path.join(claudeProjDir, f);
-            const st = fs.statSync(full);
-            return { full, id: path.basename(f, '.jsonl'), mtimeMs: st.mtimeMs, size: st.size };
-          })
-          .sort((a, b) => b.mtimeMs - a.mtimeMs);
-        if (files[0]) {
-          rawSessionBytes = files[0].size;
-          sessionId = files[0].id;
-          const lines = fs.readFileSync(files[0].full, 'utf8').trim().split('\n');
-          for (const l of lines.slice(-120)) {
-            try {
-              const o = JSON.parse(l);
-              if (o.type === 'user' && typeof o.message?.content === 'string') {
-                const txt = o.message.content.replace(/\s+/g, ' ').trim();
-                if (txt) userTimeline.push(txt.slice(0, 180));
-              }
-            } catch {}
-          }
+  // 2. Claude Code Sessions for this projectRoot
+  const encoded = projectRoot.replace(/[^a-zA-Z0-9]/g, '-');
+  const claudeProjDir = path.join(home, '.claude', 'projects', encoded);
+  try {
+    if (fs.existsSync(claudeProjDir)) {
+      const files = fs
+        .readdirSync(claudeProjDir)
+        .filter((f) => f.endsWith('.jsonl'))
+        .map((f) => {
+          const full = path.join(claudeProjDir, f);
+          const st = fs.statSync(full);
+          return { full, id: path.basename(f, '.jsonl'), mtimeMs: st.mtimeMs, size: st.size };
+        })
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      for (const f of files.slice(0, 5)) {
+        const prompts = [];
+        const assistantDigest = [];
+        let model = 'claude-opus-4-8';
+        const lines = readHeadAndTailUtf8(f.full).trim().split('\n');
+        for (const l of lines.slice(-120)) {
+          try {
+            const o = JSON.parse(l);
+            if (o.message?.model) model = o.message.model;
+            if (o.type === 'user' && typeof o.message?.content === 'string') {
+              const txt = o.message.content.replace(/\s+/g, ' ').trim();
+              if (txt && !txt.startsWith('<')) prompts.push(txt.slice(0, 180));
+            } else if (o.type === 'assistant' && Array.isArray(o.message?.content)) {
+              const tBlock = o.message.content.find((b) => b.type === 'text' && b.text);
+              if (tBlock) assistantDigest.push(tBlock.text.replace(/\s+/g, ' ').trim().slice(0, 200));
+            }
+          } catch {}
         }
+        if (prompts.length > 0 || f.size > 200) {
+          sessions.push({
+            id: `claude:${f.id}`,
+            rawId: f.id,
+            agentId: 'claude',
+            agentName: 'Claude Code',
+            model,
+            title: prompts[prompts.length - 1] || `Claude session ${f.id.slice(0, 8)}`,
+            prompts: prompts.slice(-6),
+            assistantDigest: assistantDigest.slice(-3),
+            touchedFiles: [],
+            mtimeMs: f.mtimeMs,
+            ago: formatAgo(f.mtimeMs),
+            rawBytes: f.size,
+            sourceFile: shortenHome(f.full, home),
+          });
+        }
+      }
+    }
+  } catch {}
+
+  // 3. OpenAI Codex Sessions for this projectRoot
+  const codexDir = path.join(home, '.codex', 'sessions');
+  try {
+    const codexFiles = [];
+    const scan = (dir) => {
+      if (!fs.existsSync(dir)) return;
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) scan(full);
+        else if (e.name.endsWith('.jsonl')) {
+          const st = fs.statSync(full);
+          codexFiles.push({ path: full, id: path.basename(full, '.jsonl'), mtimeMs: st.mtimeMs, size: st.size });
+        }
+      }
+    };
+    scan(codexDir);
+    codexFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    for (const item of codexFiles.slice(0, 15)) {
+      try {
+        const raw = readHeadAndTailUtf8(item.path);
+        if (!raw.includes(projectRoot)) continue;
+        const lines = raw.trim().split('\n');
+        const prompts = [];
+        let model = 'gpt-6-astra';
+        for (const l of lines) {
+          try {
+            const obj = JSON.parse(l);
+            if (obj.type === 'turn_context' && obj.payload?.model) model = obj.payload.model;
+            if (obj.payload?.role === 'user' && Array.isArray(obj.payload?.content)) {
+              const txt = obj.payload.content.find((c) => c.text)?.text || '';
+              if (txt && !txt.startsWith('<')) prompts.push(txt.replace(/\s+/g, ' ').trim().slice(0, 180));
+            }
+          } catch {}
+        }
+        sessions.push({
+          id: `codex:${item.id}`,
+          rawId: item.id,
+          agentId: 'codex',
+          agentName: 'OpenAI Codex',
+          model,
+          title: prompts[prompts.length - 1] || `Codex session ${item.id.slice(0, 8)}`,
+          prompts: prompts.slice(-6),
+          assistantDigest: [],
+          touchedFiles: [],
+          mtimeMs: item.mtimeMs,
+          ago: formatAgo(item.mtimeMs),
+          rawBytes: item.size,
+          sourceFile: shortenHome(item.path, home),
+        });
+      } catch {}
+    }
+  } catch {}
+
+  // 4. Always provide a deterministic Git Working Tree session card so any repo can be handed off cleanly
+  const gitCommits = (git.recentCommits || []).slice(0, 4);
+  const gitModified = [...(git.modifiedFiles || []), ...(git.untrackedFiles || [])];
+  sessions.push({
+    id: `git:${path.basename(projectRoot)}`,
+    rawId: `git-${git.headShort || 'head'}`,
+    agentId: manualActiveAgent || 'antigravity',
+    agentName: 'Git Working Tree',
+    model: `${git.branch || 'main'} @ ${git.headShort || 'HEAD'}`,
+    title: gitCommits[0]
+      ? `Git HEAD: ${gitCommits[0]}`
+      : `Working tree in ${path.basename(projectRoot)} (${gitModified.length} modified files)`,
+    prompts: gitCommits.length > 0 ? gitCommits.map((c) => `Commit: ${c}`) : [`Branch ${git.branch || 'main'} active`],
+    assistantDigest: [],
+    touchedFiles: gitModified.slice(0, 8),
+    mtimeMs: Date.now() - 3600 * 1000,
+    ago: 'Live tree',
+    rawBytes: Math.max(4096, gitModified.length * 6400),
+    sourceFile: `${shortenHome(projectRoot, home)}/.git`,
+  });
+
+  sessions.sort((a, b) => {
+    if (a.id.startsWith('git:')) return 1;
+    if (b.id.startsWith('git:')) return -1;
+    return b.mtimeMs - a.mtimeMs;
+  });
+
+  return sessions;
+}
+
+/**
+ * Runs CodeSkeletonizer over the project's active/modified code files (or top code files)
+ * and inspects `.vicem/ledger.json` + `.vicem/BATON.md` on disk so the user can see and test
+ * the exact AST skeletonization & symbol rehydration in real time.
+ */
+function collectLiveSkeletonLedger(projectRoot, activeFiles, persistToDisk = false) {
+  const codeCandidates = [...(activeFiles || [])].filter((f) =>
+    /\.(mjs|js|ts|tsx|jsx|py|go|rs|java|c|cpp|h)$/i.test(f)
+  );
+  if (codeCandidates.length === 0) {
+    try {
+      for (const entry of fs.readdirSync(projectRoot)) {
+        if (/\.(mjs|js|ts|tsx|jsx|py|go|rs|java|c|cpp)$/i.test(entry) && !entry.startsWith('.')) {
+          codeCandidates.push(entry);
+        }
+        if (codeCandidates.length >= 4) break;
       }
     } catch {}
   }
 
-  // 3. Combine session-touched files FIRST, then Git modified + untracked files sorted by code priority & mtime
+  const liveLedger = new DietLedger(`baton-${Date.now()}`);
+  const fileBreakdowns = [];
+  let totalRawTok = 0;
+  let totalSkelTok = 0;
+
+  for (const rel of codeCandidates.slice(0, 5)) {
+    const full = path.join(projectRoot, rel);
+    try {
+      if (!fs.existsSync(full) || !fs.statSync(full).isFile()) continue;
+      const rawContent = fs.readFileSync(full, 'utf8');
+      if (rawContent.length > 350000) continue;
+      const rawTok = TokenEstimator.estimate(rawContent);
+      const { skeleton, ledgerEntries } = CodeSkeletonizer.skeletonize(rel, rawContent, {
+        ledger: liveLedger,
+        minLines: 10,
+      });
+      const skelTok = TokenEstimator.estimate(skeleton);
+      totalRawTok += rawTok;
+      totalSkelTok += skelTok;
+      const savedPct = rawTok > skelTok ? Math.round((1 - skelTok / rawTok) * 1000) / 10 : 0;
+      fileBreakdowns.push({
+        filePath: rel,
+        rawTokens: rawTok,
+        skeletonTokens: skelTok,
+        savedPct,
+        symbolCount: ledgerEntries.length,
+        skeletonPreview: skeleton.slice(0, 900),
+        symbols: ledgerEntries.slice(0, 18).map((e) => ({
+          filePath: e.filePath,
+          symbolName: e.symbolName,
+          startLine: e.startLine,
+          endLine: e.endLine,
+          lines: Math.max(1, e.endLine - e.startLine + 1),
+          tokens: TokenEstimator.estimate(e.content),
+        })),
+      });
+    } catch {}
+  }
+
+  if (persistToDisk && liveLedger.entries.length > 0) {
+    try {
+      liveLedger.save(projectRoot);
+    } catch {}
+  }
+
+  const batonDiskPath = path.join(projectRoot, '.vicem', 'BATON.md');
+  const ledgerDiskPath = path.join(projectRoot, '.vicem', 'ledger.json');
+  const batonOnDisk = fs.existsSync(batonDiskPath);
+  const ledgerOnDisk = fs.existsSync(ledgerDiskPath);
+  const batonDiskBytes = batonOnDisk ? fs.statSync(batonDiskPath).size : 0;
+  const ledgerDiskBytes = ledgerOnDisk ? fs.statSync(ledgerDiskPath).size : 0;
+  const batonMtimeMs = batonOnDisk ? fs.statSync(batonDiskPath).mtimeMs : 0;
+
+  let diskLedgerSymbols = 0;
+  if (ledgerOnDisk) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(ledgerDiskPath, 'utf8'));
+      diskLedgerSymbols = Array.isArray(parsed.entries) ? parsed.entries.length : 0;
+    } catch {}
+  }
+
+  let driftStatus = { drifted: false, driftedFiles: [] };
+  try {
+    driftStatus = StalenessDriftGuard.check(projectRoot);
+  } catch {}
+
+  return {
+    files: fileBreakdowns,
+    totalSymbols: Math.max(liveLedger.entries.length, diskLedgerSymbols),
+    liveSymbolsCount: liveLedger.entries.length,
+    diskSymbolsCount: diskLedgerSymbols,
+    totalCodeRawTokens: totalRawTok,
+    totalCodeSkeletonTokens: totalSkelTok,
+    codeSavedPct:
+      totalRawTok > totalSkelTok ? Math.round((1 - totalSkelTok / totalRawTok) * 1000) / 10 : 0,
+    batonOnDisk,
+    ledgerOnDisk,
+    batonDiskBytes,
+    ledgerDiskBytes,
+    batonDiskAgo: batonMtimeMs ? formatAgo(batonMtimeMs) : 'Not written yet',
+    drifted: Boolean(driftStatus?.drifted),
+    driftedFiles: driftStatus?.driftedFiles || [],
+    liveLedger,
+  };
+}
+
+/**
+ * Harvests rich, multi-turn conversation history, tool actions, and active files
+ * from the selected or most recent session of `projectRoot`.
+ */
+function harvestRichProjectContext(projectRoot, home, git, projectSessions = null) {
+  const sessions = projectSessions || discoverProjectSessions(projectRoot, home, git);
+  let chosen = null;
+  if (selectedSourceSessionId) {
+    chosen = sessions.find((s) => s.id === selectedSourceSessionId) || null;
+  }
+  if (!chosen && manualActiveAgent) {
+    chosen = sessions.find((s) => s.agentId === manualActiveAgent && !s.id.startsWith('git:')) || null;
+  }
+  if (!chosen) {
+    chosen = sessions[0] || null;
+  }
+
+  const userTimeline = chosen ? [...chosen.prompts] : [];
+  const assistantDigest = chosen ? [...(chosen.assistantDigest || [])] : [];
+  const touchedFiles = new Set(chosen ? chosen.touchedFiles || [] : []);
+  const rawSessionBytes = chosen ? chosen.rawBytes || 0 : 0;
+  const sessionId = chosen ? chosen.rawId || chosen.id : 'live-session';
+
+  // Combine session-touched files FIRST, then Git modified + untracked files sorted by code priority & mtime
   const candidateMap = new Map();
   const skipDocsAndMeta = new Set([
     'AGENTS.md',
@@ -959,6 +1246,7 @@ function harvestRichProjectContext(projectRoot, home, git) {
   const recentAssistant = assistantDigest.slice(-3);
 
   return {
+    chosenSession: chosen,
     sessionId,
     rawSessionBytes,
     recentUsers,
@@ -982,7 +1270,8 @@ async function collectState() {
   const diag = DoctorDiagnostics.runDiagnostics(projectRoot, process.env);
   const detected = await SmartInferenceEngine.autoDetectSource(projectRoot, process.env);
   const git = GitCollector.collect(projectRoot);
-  const rich = harvestRichProjectContext(projectRoot, home, git);
+  const projectSessions = discoverProjectSessions(projectRoot, home, git);
+  const rich = harvestRichProjectContext(projectRoot, home, git, projectSessions);
 
   const effectiveGit = {
     ...git,
@@ -1032,9 +1321,17 @@ async function collectState() {
     userPrompts: rich.recentUsers,
   };
 
+  const activeSourceAgentId =
+    (rich.chosenSession && !rich.chosenSession.id.startsWith('git:')
+      ? rich.chosenSession.agentId
+      : null) ||
+    manualActiveAgent ||
+    detected.agent ||
+    'antigravity';
+
   const baton = BatonIaBuilder.build({
     projectRoot,
-    sourceAgent: detected.agent || 'antigravity',
+    sourceAgent: activeSourceAgentId,
     targetAgent: 'codex',
     sessionId: rich.sessionId,
     persist: false,
@@ -1043,9 +1340,12 @@ async function collectState() {
     budgetTokens: 4000,
   });
 
+  const skelSummary = collectLiveSkeletonLedger(projectRoot, rich.activeFileList, false);
+
   const trueRawTokens = Math.max(
     baton.rawTokens,
-    Math.round(rich.rawSessionBytes / 4)
+    Math.round(rich.rawSessionBytes / 4),
+    skelSummary.totalCodeRawTokens + baton.dietTokens
   );
 
   const ALL_PLATFORMS = [
@@ -1063,7 +1363,7 @@ async function collectState() {
     { id: 'web', name: 'Web Chat', primary: true },
   ];
 
-  let autoWorkingId = manualActiveAgent;
+  let autoWorkingId = activeSourceAgentId;
   if (!autoWorkingId) {
     for (const a of ALL_PLATFORMS.map((p) => p.id)) {
       if (a === 'web') continue;
@@ -1076,29 +1376,53 @@ async function collectState() {
     if (!autoWorkingId) autoWorkingId = 'antigravity';
   }
 
+  // Map project-specific sessions by agentId so each row knows if it belongs to the selected project!
+  const projectSessionByAgent = new Map();
+  for (const s of projectSessions) {
+    if (s.id.startsWith('git:')) continue;
+    if (!projectSessionByAgent.has(s.agentId)) {
+      projectSessionByAgent.set(s.agentId, s);
+    }
+  }
+
   const nodes = ALL_PLATFORMS.map((item) => {
     const t = tel[item.id];
+    const projSess = projectSessionByAgent.get(item.id) || null;
+    const matchesRawWorkspace =
+      Boolean(t?.rawWorkspace && path.resolve(t.rawWorkspace) === path.resolve(projectRoot));
+    const inProject = Boolean(projSess || matchesRawWorkspace);
+
     const check = diag.agentChecks.find((c) => c.id === item.id);
     const binFound = Boolean(check?.binFound || resolveAgentBinary(item.id, home));
     const hasStorage = Boolean(check?.hasStorage || (t?.mtimeMs || 0) > 0);
     const installed = item.id === 'web' ? true : binFound || hasStorage;
-    const mtimeMs = t?.mtimeMs || 0;
+    const mtimeMs = projSess ? projSess.mtimeMs : t?.mtimeMs || 0;
     const ageSec = mtimeMs ? (Date.now() - mtimeMs) / 1000 : Infinity;
+    const isSource = item.id === autoWorkingId;
 
     let status = 'Idle';
-    if (item.id === autoWorkingId && runningProcs[item.id]) {
+    if (isSource) {
       status = 'Working';
-    } else if (item.id === lastHandedOffFrom || ageSec < 3600 * 12) {
+    } else if (inProject || item.id === lastHandedOffFrom || ageSec < 3600 * 12) {
       status = 'Done';
     }
+
+    const displayWorkspace = inProject
+      ? shortenHome(projectRoot, home)
+      : t?.workspace || 'Ready';
+    const displayPrompt = projSess?.title || (matchesRawWorkspace ? t?.lastPrompt : '') || '';
 
     return {
       id: item.id,
       name: item.name,
       primary: item.primary || installed,
-      model: t?.model || '',
-      workspace: t?.workspace || '—',
-      lastPrompt: t?.lastPrompt || '',
+      model: projSess?.model || t?.model || '',
+      workspace: displayWorkspace,
+      globalWorkspace: t?.workspace || 'Ready',
+      inProject,
+      isSource,
+      projectSessionId: projSess?.id || null,
+      lastPrompt: displayPrompt,
       installed,
       status,
       lastSeen: item.id === 'web' ? 'On demand' : formatAgo(mtimeMs),
@@ -1107,30 +1431,83 @@ async function collectState() {
   });
 
   const mountedFiles = [];
-  for (const rel of [
-    'AGENTS.md',
-    'CLAUDE.md',
-    'GEMINI.md',
-    '.cursorrules',
-    '.windsurfrules',
-    '.clinerules',
-    '.github/copilot-instructions.md',
-  ]) {
-    const fp = path.join(projectRoot, rel);
+  const allRuleTargets = [
+    { rel: 'AGENTS.md', label: 'AGENTS.md (Codex / OpenCode / Antigravity)' },
+    { rel: 'CLAUDE.md', label: 'CLAUDE.md (Claude Code)' },
+    { rel: 'GEMINI.md', label: 'GEMINI.md (Gemini CLI)' },
+    { rel: '.cursorrules', label: '.cursorrules (Cursor)' },
+    { rel: '.windsurfrules', label: '.windsurfrules (Windsurf)' },
+    { rel: '.clinerules', label: '.clinerules (Cline / Roo)' },
+    { rel: '.github/copilot-instructions.md', label: 'copilot-instructions.md (VS Code)' },
+  ];
+  const ruleMountStatus = allRuleTargets.map((rt) => {
+    const fp = path.join(projectRoot, rt.rel);
+    let mounted = false;
     try {
       if (fs.existsSync(fp) && fs.readFileSync(fp, 'utf8').includes('<!-- VICEM-BATON-START -->')) {
-        mountedFiles.push(rel);
+        mounted = true;
+        mountedFiles.push(rt.rel);
       }
     } catch {}
-  }
+    return { ...rt, mounted };
+  });
 
+  const savedTokens = Math.max(0, trueRawTokens - baton.dietTokens);
   const savedPct =
     trueRawTokens > baton.dietTokens
       ? Math.round((1 - baton.dietTokens / trueRawTokens) * 1000) / 10
       : 0;
 
+  // Enrich discovered + custom workspaces with git branch & baton/ledger status
+  const workspaceMap = new Map();
+  for (const ws of cachedTelemetry.workspaces || []) {
+    workspaceMap.set(ws.path, ws);
+  }
+  for (const customPath of customWorkspacePaths) {
+    if (fs.existsSync(customPath) && !workspaceMap.has(customPath)) {
+      workspaceMap.set(customPath, {
+        path: customPath,
+        name: path.basename(customPath),
+        shortPath: shortenHome(customPath, home),
+        lastAgent: 'Custom',
+        mtimeMs: Date.now(),
+        lastPrompt: '',
+      });
+    }
+  }
+  if (!workspaceMap.has(projectRoot)) {
+    workspaceMap.set(projectRoot, {
+      path: projectRoot,
+      name: path.basename(projectRoot),
+      shortPath: shortenHome(projectRoot, home),
+      lastAgent: 'Active',
+      mtimeMs: Date.now(),
+      lastPrompt: '',
+    });
+  }
+
+  const enrichedWorkspaces = [...workspaceMap.values()].slice(0, 10).map((ws) => {
+    const hasBaton = fs.existsSync(path.join(ws.path, '.vicem', 'BATON.md'));
+    const hasLedger = fs.existsSync(path.join(ws.path, '.vicem', 'ledger.json'));
+    let wsBranch = 'main';
+    try {
+      const headFile = path.join(ws.path, '.git', 'HEAD');
+      if (fs.existsSync(headFile)) {
+        const ref = fs.readFileSync(headFile, 'utf8').trim();
+        const m = ref.match(/ref: refs\/heads\/(.+)/);
+        if (m) wsBranch = m[1];
+      }
+    } catch {}
+    return {
+      ...ws,
+      branch: wsBranch,
+      hasBaton,
+      hasLedger,
+    };
+  });
+
   return {
-    guiVersion: 'v16',
+    guiVersion: 'v18',
     osPlatform: process.platform,
     projectRoot,
     project: path.basename(projectRoot),
@@ -1138,8 +1515,15 @@ async function collectState() {
     branch: git.branch || 'main',
     headShort: git.headShort || 'HEAD',
     modifiedFiles: effectiveGit.modifiedFiles,
+    recentCommits: (git.recentCommits || []).slice(0, 4),
     mountedFiles,
-    workspaces: cachedTelemetry.workspaces,
+    ruleMountStatus,
+    workspaces: enrichedWorkspaces,
+    projectSessions: projectSessions.map((s) => ({
+      ...s,
+      isSelected: Boolean(rich.chosenSession && rich.chosenSession.id === s.id),
+    })),
+    selectedSessionId: rich.chosenSession ? rich.chosenSession.id : null,
     workingAgentId: autoWorkingId,
     lastHandedOffFrom,
     taskTitle: livePromptForProject,
@@ -1147,8 +1531,25 @@ async function collectState() {
     stats: {
       rawTokens: trueRawTokens,
       dietTokens: baton.dietTokens,
+      savedTokens,
       savedPct,
       secretsMasked: baton.redactedCount,
+    },
+    skeletonSummary: {
+      files: skelSummary.files,
+      totalSymbols: skelSummary.totalSymbols,
+      liveSymbolsCount: skelSummary.liveSymbolsCount,
+      diskSymbolsCount: skelSummary.diskSymbolsCount,
+      totalCodeRawTokens: skelSummary.totalCodeRawTokens,
+      totalCodeSkeletonTokens: skelSummary.totalCodeSkeletonTokens,
+      codeSavedPct: skelSummary.codeSavedPct,
+      batonOnDisk: skelSummary.batonOnDisk,
+      ledgerOnDisk: skelSummary.ledgerOnDisk,
+      batonDiskBytes: skelSummary.batonDiskBytes,
+      ledgerDiskBytes: skelSummary.ledgerDiskBytes,
+      batonDiskAgo: skelSummary.batonDiskAgo,
+      drifted: skelSummary.drifted,
+      driftedFiles: skelSummary.driftedFiles,
     },
     lastHandoffReceipt,
     batonMarkdown: baton.markdown,
@@ -1432,6 +1833,7 @@ async function executeRealHandoff(targetId, launchMode = 'app') {
     gitContext: effectiveGit,
     budgetTokens: 4000,
   });
+  const skelSaved = collectLiveSkeletonLedger(projectRoot, rich.activeFileList, true);
 
   const batonFilePath = path.join(projectRoot, '.vicem', 'BATON.md');
   const batonStat = fs.existsSync(batonFilePath) ? fs.statSync(batonFilePath) : null;
@@ -1488,27 +1890,27 @@ async function executeRealHandoff(targetId, launchMode = 'app') {
     steps: [
       {
         ok: true,
-        title: '1. Session & Git Harvest',
-        detail: `Extracted context from ${sourceAgent} in ${state.project} (${state.branch})`,
+        title: 'Harvest Session & Git State',
+        detail: `Extracted ${rich.recentUsers.length} prompts & ${rich.activeFileList.length} active files from ${sourceAgent} in ${state.project} (${state.branch})`,
       },
       {
         ok: true,
-        title: '2. Context Diet & Redaction',
-        detail: `${state.stats.rawTokens.toLocaleString()} → ${baton.dietTokens.toLocaleString()} tokens (-${state.stats.savedPct}%) · ${baton.redactedCount} secrets masked`,
+        title: 'Skeletonize AST & 4-Stage Diet',
+        detail: `${state.stats.rawTokens.toLocaleString()} -> ${baton.dietTokens.toLocaleString()} tok (-${state.stats.savedPct}%) · ${skelSaved.totalSymbols} symbols indexed · ${baton.redactedCount} secrets masked`,
       },
       {
         ok: Boolean(batonStat && batonStat.size > 0),
-        title: '3. Baton File Written on Disk',
-        detail: `${shortenHome(batonFilePath, home)} (${batonStat ? batonStat.size.toLocaleString() : 0} bytes verified)`,
+        title: 'Persist Baton & Ledger on Disk',
+        detail: `${shortenHome(batonFilePath, home)} (${batonStat ? batonStat.size.toLocaleString() : 0}B) + .vicem/ledger.json (${skelSaved.ledgerDiskBytes.toLocaleString()}B)`,
       },
       {
         ok: mountVerified && clipboardChars > 0,
-        title: '4. Rule Mounted & Clipboard Verified',
-        detail: `Injected into ${mountedRel} · macOS clipboard verified (${clipboardChars.toLocaleString()} chars on pbpaste)`,
+        title: 'Mount Rules & Verify Clipboard',
+        detail: `Mounted ${mountedRel} · Clipboard verified (${clipboardChars.toLocaleString()} chars)`,
       },
       {
         ok: launchResult.ok,
-        title: '5. Target Agent Launch',
+        title: 'Launch Target Agent',
         detail: `${launchResult.detail} [${launchResult.method}]`,
       },
     ],
@@ -1519,7 +1921,7 @@ async function executeRealHandoff(targetId, launchMode = 'app') {
   const updated = await collectState();
   return {
     ...updated,
-    actionReceipt: `${nowStr} · ${launchMode && launchMode !== 'off' ? (launchResult.ok ? 'Launch verified for' : 'Launch failed for') : 'Baton prepared for'} ${targetId} (${launchResult.detail})`,
+    actionReceipt: `${nowStr} · Relayed ${sourceAgent} -> ${targetId} (${launchResult.detail})`,
   };
 }
 
@@ -1528,74 +1930,93 @@ const HTML_PAGE = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Vicem — Agent Context Relay &amp; Capacity Monitor</title>
+<title>Vicem - Tactical Context Relay &amp; Diet Cockpit</title>
 <link rel="icon" type="image/png" href="/logo-dark.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  :root {
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+    --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+    --spring-snappy: cubic-bezier(0.22, 1.18, 0.32, 1);
+    --spring-glide: cubic-bezier(0.22, 1.08, 0.32, 1);
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 10px;
+  }
+
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --canvas: #08080A;
-    --canvas-glow: radial-gradient(900px circle at 50% 0%, #14141A 0%, #08080A 70%);
-    --win-bg: #101013;
-    --win-header: #0C0C0E;
-    --win-elevated: #151519;
-    --row-hover: #17171C;
-    --row-working: #111814;
-    --border-subtle: #1E1E24;
-    --border-mid: #282830;
-    --border-strong: #383844;
-    --text-primary: #F4F4F6;
-    --text-secondary: #A0A0AB;
-    --text-muted: #63636E;
-    --icon-box-bg: #16161B;
-    --icon-box-border: #26262F;
-    --seg-empty: #1D1D24;
-    --seg-fill: #E4E4E9;
-    --seg-working: #22C55E;
+    --canvas: #090A0D;
+    --canvas-glow: radial-gradient(960px circle at 50% 0%, #12171D 0%, #090A0D 72%);
+    --win-bg: #0F1115;
+    --win-header: #0B0D10;
+    --win-elevated: #151920;
+    --win-card: #12161C;
+    --row-hover: #161B22;
+    --row-working: #0F1D18;
+    --border-subtle: #1D222B;
+    --border-mid: #272E3A;
+    --border-strong: #384252;
+    --text-primary: #F2F4F8;
+    --text-secondary: #9BA3B0;
+    --text-muted: #626A78;
+    --accent: #10B981;
+    --accent-soft: rgba(16, 185, 129, 0.14);
+    --accent-border: rgba(16, 185, 129, 0.42);
+    --warn: #F59E0B;
+    --warn-soft: rgba(245, 158, 11, 0.14);
+    --icon-box-bg: #151920;
+    --seg-empty: #1C212A;
+    --seg-fill: #E2E6EE;
+    --seg-working: #10B981;
     --seg-warn: #F59E0B;
-    --status-working: #22C55E;
-    --status-done: #A1A1AA;
-    --status-idle: #52525C;
-    --btn-bg: #16161B;
-    --btn-bg-hover: #F4F4F6;
-    --btn-text-hover: #09090B;
-    --shadow-win: 0 28px 70px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.03);
-    --relay-track: #22222A;
-    --relay-pulse: #F4F4F6;
+    --status-working: #10B981;
+    --status-done: #9BA3B0;
+    --status-idle: #525966;
+    --btn-bg: #151920;
+    --btn-bg-hover: #F2F4F8;
+    --btn-text-hover: #0B0D10;
+    --shadow-win: 0 28px 70px rgba(5, 7, 10, 0.76), 0 0 0 1px rgba(242, 244, 248, 0.04);
+    --shadow-pop: 0 18px 42px rgba(5, 7, 10, 0.72);
   }
 
   :root[data-theme="light"] {
     color-scheme: light;
-    --canvas: #E8E8E5;
-    --canvas-glow: radial-gradient(900px circle at 50% 0%, #F3F3F0 0%, #E6E6E2 75%);
-    --win-bg: #FAFAF8;
-    --win-header: #F2F2EE;
-    --win-elevated: #F0F0EC;
-    --row-hover: #F3F3F0;
-    --row-working: #EDF6F0;
-    --border-subtle: #E4E4DF;
-    --border-mid: #D4D4CE;
-    --border-strong: #B8B8B0;
-    --text-primary: #111113;
-    --text-secondary: #4E4E56;
-    --text-muted: #82828C;
-    --icon-box-bg: #F2F2EE;
-    --icon-box-border: #DADAD4;
-    --seg-empty: #E2E2DC;
-    --seg-fill: #18181B;
+    --canvas: #E6E9EF;
+    --canvas-glow: radial-gradient(960px circle at 50% 0%, #F4F6F9 0%, #E6E9EF 75%);
+    --win-bg: #F8F9FB;
+    --win-header: #EFF2F6;
+    --win-elevated: #EAEFF5;
+    --win-card: #F2F4F8;
+    --row-hover: #EEF1F6;
+    --row-working: #E8F6F0;
+    --border-subtle: #DCE1E9;
+    --border-mid: #C8D0DC;
+    --border-strong: #9AA6B8;
+    --text-primary: #11141A;
+    --text-secondary: #495160;
+    --text-muted: #768092;
+    --accent: #059669;
+    --accent-soft: rgba(5, 150, 105, 0.12);
+    --accent-border: rgba(5, 150, 105, 0.42);
+    --warn: #D97706;
+    --warn-soft: rgba(217, 119, 6, 0.12);
+    --icon-box-bg: #EFF2F6;
+    --seg-empty: #DCE1E9;
+    --seg-fill: #1A1F29;
     --seg-working: #059669;
     --seg-warn: #D97706;
     --status-working: #059669;
-    --status-done: #52525B;
-    --status-idle: #A1A1AA;
-    --btn-bg: #FCFBF9;
-    --btn-bg-hover: #111113;
-    --btn-text-hover: #FAFAF8;
-    --shadow-win: 0 24px 60px rgba(15, 15, 20, 0.10), 0 2px 10px rgba(15, 15, 20, 0.05);
-    --relay-track: #D4D4CE;
-    --relay-pulse: #111113;
+    --status-done: #495160;
+    --status-idle: #9AA6B8;
+    --btn-bg: #F8F9FB;
+    --btn-bg-hover: #11141A;
+    --btn-text-hover: #F8F9FB;
+    --shadow-win: 0 24px 60px rgba(17, 20, 26, 0.12), 0 2px 10px rgba(17, 20, 26, 0.05);
+    --shadow-pop: 0 16px 36px rgba(17, 20, 26, 0.16);
   }
 
   * {
@@ -1613,61 +2034,112 @@ const HTML_PAGE = `<!DOCTYPE html>
     transition-duration: 0s !important;
   }
 
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 120ms !important;
+      transform: none !important;
+    }
+  }
+
   body {
     background: var(--canvas);
     background-image: var(--canvas-glow);
     color: var(--text-primary);
     font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
-    font-size: 13px;
+    font-size: 12.5px;
     line-height: 1.45;
-    min-height: 100vh;
+    min-height: 100dvh;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: clamp(0px, 2vw, 24px);
-    transition: background-color 0.2s ease, color 0.2s ease;
+    padding: clamp(0px, 1.5vw, 18px);
+    transition: background-color 180ms ease, color 180ms ease;
   }
 
   .app-window {
-    width: min(1160px, 100%);
+    width: min(1220px, 100%);
     max-width: 100%;
-    max-height: calc(100vh - clamp(0px, 4vw, 48px));
+    height: min(920px, calc(100dvh - clamp(0px, 3vw, 36px)));
+    max-height: calc(100dvh - clamp(0px, 3vw, 36px));
     display: flex;
     flex-direction: column;
     background: var(--win-bg);
     border: 1px solid var(--border-mid);
+    border-radius: var(--radius-lg);
     box-shadow: var(--shadow-win);
     overflow: hidden;
-    transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    position: relative;
+    transition: background-color 180ms ease, border-color 180ms ease;
   }
 
-  /* Top Brand & Workspace Bar */
+  /* Universal physical press feedback (Emil Kowalski rule: scale 0.97 on :active) */
+  button,
+  .ws-tab,
+  .session-card,
+  .pipe-node,
+  .rule-chip,
+  .symbol-row {
+    transition:
+      transform 140ms var(--ease-out),
+      background-color 150ms ease,
+      border-color 150ms ease,
+      color 150ms ease,
+      opacity 150ms var(--ease-out);
+  }
+
+  button:active,
+  .ws-tab:active,
+  .session-card:active,
+  .pipe-node:active,
+  .rule-chip:active {
+    transform: scale(0.97);
+  }
+
+  /* Blur-masked crossfade when switching workspaces or workbench views */
+  .crossfade-surface {
+    transition: filter 160ms var(--ease-out), opacity 160ms var(--ease-out);
+  }
+  .crossfade-surface.is-transitioning {
+    filter: blur(2px);
+    opacity: 0.65;
+  }
+
+  /* ==========================================================================
+     1. TOPBAR: PROJECT SWITCHER + ADD WORKSPACE POPOVER + GAMIFIED XP HUD
+     ========================================================================== */
   .win-topbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
     min-height: 52px;
-    padding: 8px 22px;
+    padding: 8px 18px;
     background: var(--win-header);
     border-bottom: 1px solid var(--border-subtle);
     flex-shrink: 0;
+    position: relative;
+    z-index: 30;
   }
 
   .brand-cluster {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     min-width: 0;
     flex: 1 1 auto;
   }
 
   .official-logo-box {
-    width: 30px;
-    height: 30px;
+    width: 28px;
+    height: 28px;
     flex-shrink: 0;
     background: var(--icon-box-bg);
     border: 1px solid var(--border-mid);
+    border-radius: var(--radius-sm);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1688,13 +2160,13 @@ const HTML_PAGE = `<!DOCTYPE html>
   .brand-name-wrap {
     display: flex;
     align-items: baseline;
-    gap: 7px;
+    gap: 6px;
     flex-shrink: 0;
   }
 
   .brand-name {
     font-weight: 700;
-    font-size: 14.5px;
+    font-size: 14px;
     letter-spacing: -0.02em;
     color: var(--text-primary);
   }
@@ -1702,515 +2174,1054 @@ const HTML_PAGE = `<!DOCTYPE html>
   .brand-ver {
     font-family: "IBM Plex Mono", monospace;
     font-size: 10px;
-    color: var(--text-muted);
+    color: var(--accent);
+    font-weight: 600;
   }
 
-  .ws-tabs {
+  .ws-switcher-bar {
     display: flex;
     align-items: center;
-    gap: 4px;
-    margin-left: 8px;
-    padding-left: 14px;
+    gap: 5px;
+    padding-left: 10px;
     border-left: 1px solid var(--border-subtle);
-    min-width: 0;
     overflow-x: auto;
     scrollbar-width: none;
+    min-width: 0;
   }
-  .ws-tabs::-webkit-scrollbar {
+  .ws-switcher-bar::-webkit-scrollbar {
     display: none;
   }
 
   .ws-tab {
+    height: 28px;
+    padding: 0 10px;
+    background: var(--win-bg);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
     font-family: "IBM Plex Mono", monospace;
     font-size: 11px;
-    color: var(--text-secondary);
-    background: transparent;
-    border: 1px solid transparent;
-    height: 26px;
-    padding: 0 10px;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    transition: all 0.14s ease;
-    max-width: 160px;
+    white-space: nowrap;
     flex-shrink: 0;
   }
 
-  .ws-tab span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .ws-tab:hover {
-    color: var(--text-primary);
-    background: var(--win-elevated);
+  @media (hover: hover) and (pointer: fine) {
+    .ws-tab:hover {
+      color: var(--text-primary);
+      border-color: var(--border-mid);
+      background: var(--win-elevated);
+    }
   }
 
   .ws-tab.active {
+    background: var(--accent-soft);
     color: var(--text-primary);
-    background: var(--win-bg);
-    border-color: var(--border-mid);
-    font-weight: 500;
+    border-color: var(--accent-border);
+    font-weight: 600;
   }
 
-  .topbar-right {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-shrink: 0;
-  }
-
-  .telemetry-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    font-family: "IBM Plex Mono", monospace;
-    font-size: 11px;
-    color: var(--text-secondary);
-    padding: 4px 9px;
-    background: var(--win-bg);
-    border: 1px solid var(--border-subtle);
-    max-width: 240px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .pulse-dot {
+  .ws-sync-dot {
     width: 6px;
     height: 6px;
+    border-radius: 99px;
+    background: var(--border-strong);
     flex-shrink: 0;
-    background: var(--status-working);
-    animation: pulseGlow 2.2s infinite ease-in-out;
+  }
+  .ws-sync-dot.synced {
+    background: var(--accent);
   }
 
-  @keyframes pulseGlow {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.45; transform: scale(0.92); }
+  .ws-branch-mini {
+    font-size: 9.5px;
+    color: var(--text-muted);
+  }
+  .ws-tab.active .ws-branch-mini {
+    color: var(--accent);
   }
 
-  .theme-btn {
+  .add-ws-btn {
     height: 28px;
-    padding: 0 10px;
-    background: var(--btn-bg);
-    border: 1px solid var(--border-mid);
+    padding: 0 9px;
+    background: transparent;
+    border: 1px dashed var(--border-mid);
+    border-radius: var(--radius-sm);
     color: var(--text-secondary);
     font-family: "IBM Plex Mono", monospace;
     font-size: 11px;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    white-space: nowrap;
+    gap: 4px;
     flex-shrink: 0;
-    transition: all 0.14s ease;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .add-ws-btn:hover {
+      color: var(--text-primary);
+      border-color: var(--text-secondary);
+      background: var(--win-elevated);
+    }
   }
 
-  .theme-btn:hover {
+  /* Origin-Aware Add Project Popover (Emil Kowalski recipe: scale(0.95) + opacity 0, transform-origin top left) */
+  .ws-popover {
+    position: absolute;
+    top: 48px;
+    left: 140px;
+    width: min(440px, calc(100vw - 32px));
+    background: var(--win-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-pop);
+    padding: 12px;
+    z-index: 80;
+    transform-origin: top left;
+    opacity: 0;
+    transform: scale(0.95);
+    pointer-events: none;
+    transition: opacity 180ms var(--ease-out), transform 180ms var(--ease-out);
+  }
+
+  .ws-popover.open {
+    opacity: 1;
+    transform: scale(1);
+    pointer-events: auto;
+  }
+
+  .ws-pop-title {
+    font-size: 11px;
+    font-weight: 600;
     color: var(--text-primary);
-    border-color: var(--border-strong);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
 
-  /* Live Baton Relay Deck */
-  .relay-deck {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  .ws-pop-form {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+
+  .ws-pop-input {
+    flex: 1;
+    height: 30px;
+    padding: 0 10px;
+    background: var(--win-bg);
+    border: 1px solid var(--border-mid);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    outline: none;
+  }
+  .ws-pop-input:focus {
+    border-color: var(--accent);
+  }
+
+  .ws-pop-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+
+  .ws-pop-item {
+    display: flex;
     align-items: center;
-    gap: 20px;
-    padding: 16px 22px;
+    justify-content: space-between;
+    padding: 6px 8px;
+    background: var(--win-bg);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-align: left;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .ws-pop-item:hover {
+      border-color: var(--accent-border);
+      color: var(--text-primary);
+    }
+  }
+
+  /* Kinetic Telemetry HUD & Action Toast (Game-Grade Motion, Zero Game Jargon) */
+  .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    position: relative;
+  }
+
+  .diet-meter-hud {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 30px;
+    padding: 0 10px;
+    background: var(--win-bg);
+    border: 1px solid var(--border-mid);
+    border-radius: var(--radius-sm);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .diet-meter-hud::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(110deg, transparent 25%, rgba(16, 185, 129, 0.18) 50%, transparent 75%);
+    transform: translateX(-120%);
+    pointer-events: none;
+  }
+  .diet-meter-hud.pulse-sheen::after {
+    animation: sheenSweep 560ms var(--ease-out);
+  }
+
+  @keyframes sheenSweep {
+    0% { transform: translateX(-120%); }
+    100% { transform: translateX(120%); }
+  }
+
+  .ast-count-badge {
+    color: var(--accent);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .diet-bar-wrap {
+    width: 64px;
+    height: 6px;
+    background: var(--seg-empty);
+    border-radius: 99px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* Hardware-accelerated clip-path compression ratio bar */
+  .diet-bar-fill {
+    position: absolute;
+    inset: 0;
+    background: var(--accent);
+    clip-path: inset(0 50% 0 0);
+    transition: clip-path 380ms var(--spring-glide);
+  }
+
+  .diet-pct-val {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .combo-pill {
+    height: 30px;
+    padding: 0 9px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-sm);
+    color: var(--accent);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-variant-numeric: tabular-nums;
+    transition: transform 240ms var(--spring-snappy), border-color 180ms ease;
+  }
+  .combo-pill.bump {
+    transform: scale(1.045);
+  }
+
+  /* Kinetic Spring Action Toast */
+  .action-toast {
+    position: absolute;
+    top: 38px;
+    right: 68px;
+    background: var(--accent);
+    color: #090A0D;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+    opacity: 0;
+    transform: translate3d(0, 8px, 0) scale(0.92);
+    transition: opacity 220ms var(--ease-out), transform 280ms var(--spring-snappy);
+    z-index: 90;
+    white-space: nowrap;
+    box-shadow: 0 10px 24px rgba(16, 185, 129, 0.28);
+  }
+  .action-toast.show {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  .theme-btn {
+    height: 30px;
+    padding: 0 9px;
+    background: var(--win-bg);
+    border: 1px solid var(--border-mid);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .theme-btn:hover {
+      color: var(--text-primary);
+      border-color: var(--border-strong);
+    }
+  }
+
+  /* ==========================================================================
+     2. SOURCE SESSION SELECTOR & RELAY GOAL DECK
+     ========================================================================== */
+  .session-deck {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 18px;
     background: var(--win-bg);
     border-bottom: 1px solid var(--border-subtle);
     flex-shrink: 0;
   }
 
-  .deck-left {
+  .session-strip-header {
     display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
   }
 
-  .deck-eyebrow {
+  .session-strip-label {
     display: flex;
     align-items: center;
     gap: 8px;
     font-family: "IBM Plex Mono", monospace;
     font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .project-path-pill {
+    color: var(--text-primary);
+    font-weight: 600;
+    background: var(--win-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: 1px 7px;
+  }
+
+  .session-cards {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .session-cards::-webkit-scrollbar {
+    display: none;
+  }
+
+  @keyframes cardCascadeIn {
+    0% {
+      opacity: 0;
+      transform: translate3d(0, 6px, 0) scale(0.97);
+    }
+    100% {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+  }
+
+  .session-card {
+    min-width: 210px;
+    max-width: 280px;
+    padding: 7px 10px;
+    background: var(--win-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex-shrink: 0;
+    text-align: left;
+    position: relative;
+    overflow: hidden;
+    animation: cardCascadeIn 260ms var(--ease-out) backwards;
+    animation-delay: calc(var(--idx, 0) * 32ms);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .session-card:hover {
+      border-color: var(--border-strong);
+      background: var(--row-hover);
+      transform: translate3d(0, -1px, 0);
+    }
+  }
+
+  .session-card:active {
+    transform: scale(0.96);
+  }
+
+  .session-card.selected {
+    background: var(--row-working);
+    border-color: var(--accent);
+    box-shadow: 0 0 18px rgba(16, 185, 129, 0.12);
+  }
+
+  .sc-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+  }
+
+  .sc-agent {
+    font-weight: 600;
+    color: var(--text-primary);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  @keyframes beaconPulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.06); opacity: 0.86; }
+  }
+
+  .sc-source-tag {
+    font-size: 9.5px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--accent);
+    color: #090A0D;
+    font-weight: 700;
+    animation: beaconPulse 2.2s ease-in-out infinite;
+  }
+
+  .sc-ago {
     color: var(--text-muted);
+    font-size: 10px;
+  }
+
+  .sc-title {
+    font-size: 11.5px;
+    color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  .session-card.selected .sc-title {
+    color: var(--text-primary);
+  }
 
-  .branch-tag {
-    color: var(--text-secondary);
-    background: var(--win-elevated);
-    border: 1px solid var(--border-subtle);
-    padding: 1px 6px;
+  /* Goal Input + Route Bar */
+  .goal-route-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 12px;
   }
 
   .prompt-input-wrap {
     position: relative;
     display: flex;
     align-items: center;
+    min-width: 0;
+  }
+
+  .prompt-prefix {
+    position: absolute;
+    left: 10px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--accent);
+    pointer-events: none;
   }
 
   .prompt-input {
     width: 100%;
+    height: 32px;
+    padding: 0 58px 0 58px;
     background: var(--win-header);
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--border-mid);
+    border-radius: var(--radius-sm);
     color: var(--text-primary);
     font-family: "Plus Jakarta Sans", sans-serif;
-    font-size: 13.5px;
+    font-size: 12.5px;
     font-weight: 500;
-    height: 36px;
-    padding: 0 72px 0 12px;
-    transition: border-color 0.15s ease, background-color 0.15s ease;
-  }
-
-  .prompt-input:hover {
-    border-color: var(--border-mid);
-  }
-
-  .prompt-input:focus {
     outline: none;
-    border-color: var(--border-strong);
-    background: var(--win-bg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: border-color 150ms ease;
+  }
+  .prompt-input:focus {
+    border-color: var(--accent);
   }
 
   .prompt-edit-hint {
     position: absolute;
-    right: 10px;
+    right: 9px;
     font-family: "IBM Plex Mono", monospace;
     font-size: 10px;
     color: var(--text-muted);
     pointer-events: none;
   }
 
-  .relay-graph {
+  .relay-route-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 32px;
+    padding: 0 11px;
+    background: var(--win-header);
+    border: 1px solid var(--border-mid);
+    border-radius: var(--radius-sm);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    flex-shrink: 0;
+    transition: border-color 180ms ease, box-shadow 180ms ease;
+  }
+  .relay-route-pill.route-active {
+    border-color: var(--accent);
+    box-shadow: 0 0 16px rgba(16, 185, 129, 0.16);
+  }
+
+  .route-from {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .route-arrow {
+    color: var(--text-muted);
+    display: inline-block;
+    transition: transform 200ms var(--spring-snappy), color 180ms ease;
+  }
+  .relay-route-pill.route-active .route-arrow {
+    color: var(--accent);
+    transform: translateX(3px);
+  }
+  .route-to {
+    color: var(--text-secondary);
+    font-weight: 600;
+    transition: color 160ms ease;
+  }
+  .route-to.locked {
+    color: var(--text-primary);
+  }
+
+  /* ==========================================================================
+     3. LIVE 4-NODE CORE PIPELINE STEPPER (WITH SLIDING GLIDER & PULSE WAVE)
+     ========================================================================== */
+  .pipeline-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    padding: 8px 18px;
+    background: var(--win-header);
+    border-bottom: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+    position: relative;
+  }
+
+  /* Physical Sliding Glider Highlight Cursor (Game Menu / Layout Projection Feel) */
+  .pipe-glider {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 0;
+    border: 1.5px solid var(--accent);
+    background: var(--row-working);
+    border-radius: var(--radius-md);
+    box-shadow: 0 0 22px rgba(16, 185, 129, 0.15);
+    pointer-events: none;
+    z-index: 1;
+    opacity: 0;
+    transition:
+      transform 280ms var(--spring-glide),
+      width 280ms var(--spring-glide),
+      height 280ms var(--spring-glide),
+      opacity 180ms ease;
+  }
+  .pipe-glider.visible {
+    opacity: 1;
+  }
+
+  @keyframes nodeWaveBounce {
+    0% { transform: scale(1); }
+    45% { transform: scale(1.032); border-color: var(--accent); }
+    100% { transform: scale(1); }
+  }
+
+  .pipe-node {
+    padding: 7px 10px;
+    background: var(--win-bg);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    cursor: pointer;
     display: flex;
     flex-direction: column;
-    gap: 7px;
-    padding: 11px 14px;
-    background: var(--win-header);
-    border: 1px solid var(--border-subtle);
-    min-width: 0;
+    gap: 3px;
+    text-align: left;
     position: relative;
+    z-index: 2;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .pipe-node:hover {
+      border-color: var(--border-strong);
+      background: var(--win-elevated);
+      transform: translate3d(0, -1px, 0);
+    }
+  }
+
+  .pipe-node.active-tab {
+    background: transparent;
+    border-color: transparent;
+  }
+
+  .pipe-node.wave-hit {
+    animation: nodeWaveBounce 340ms var(--spring-snappy);
+  }
+
+  /* Animated Signal Connector Line Between Pipeline Stages */
+  .pipe-node:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: -11px;
+    width: 10px;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent) 50%, transparent 50%);
+    background-size: 6px 2px;
+    opacity: 0.55;
+    animation: packetFlow 900ms linear infinite;
+    pointer-events: none;
+  }
+
+  @keyframes packetFlow {
+    0% { background-position: 0 0; }
+    100% { background-position: 12px 0; }
+  }
+
+  .pipe-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+  }
+
+  .pipe-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .pipe-badge {
+    font-size: 9.5px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--win-elevated);
+    border: 1px solid var(--border-mid);
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .pipe-badge.ok {
+    background: var(--accent-soft);
+    border-color: var(--accent-border);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .pipe-badge.warn {
+    background: var(--warn-soft);
+    border-color: var(--warn);
+    color: var(--warn);
+  }
+
+  .pipe-sub {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    white-space: nowrap;
     overflow: hidden;
-    transition: border-color 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
   }
 
-  .relay-graph.route-locked {
-    border-color: rgba(34, 197, 94, 0.45);
-    box-shadow: inset 0 0 24px rgba(34, 197, 94, 0.05);
+  /* Interactive Core Workbench Drawer */
+  .workbench-drawer {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 18px;
+    background: var(--win-elevated);
+    border-bottom: 1px solid var(--border-mid);
+    max-height: 225px;
+    overflow-y: auto;
+    flex-shrink: 0;
   }
 
-  .relay-graph.relaying-surge {
-    border-color: var(--status-working);
-    box-shadow: inset 0 0 32px rgba(34, 197, 94, 0.14);
+  .workbench-drawer.open {
+    display: flex;
   }
 
-  .relay-nodes {
+  .wb-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
+  }
+
+  .wb-title {
     font-family: "IBM Plex Mono", monospace;
-    font-size: 11.5px;
-  }
-
-  .relay-endpoint {
+    font-size: 11px;
     font-weight: 600;
-    color: var(--text-primary);
-    white-space: nowrap;
-    transition: color 0.18s ease, transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    color: var(--accent);
   }
 
-  .relay-endpoint.target-preview {
-    color: var(--text-secondary);
-  }
-
-  .relay-endpoint.target-preview.active-route {
-    color: var(--status-working);
-    transform: translateX(-1px);
-  }
-
-  .relay-wire {
-    flex: 1;
-    height: 10px;
-    position: relative;
+  .wb-actions {
     display: flex;
     align-items: center;
-    overflow: hidden;
+    gap: 6px;
   }
 
-  .relay-wire::before {
-    content: "";
-    width: 100%;
-    height: 1px;
-    background: repeating-linear-gradient(
-      90deg,
-      var(--relay-track) 0px,
-      var(--relay-track) 4px,
-      transparent 4px,
-      transparent 7px
-    );
-    transition: opacity 0.2s ease;
+  .wb-grid-2 {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr;
+    gap: 12px;
   }
 
-  .relay-wire::after {
-    content: "";
-    position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    left: -40%;
-    width: 40%;
-    height: 2px;
-    background: linear-gradient(90deg, transparent, var(--relay-pulse), var(--status-working));
-    box-shadow: 0 0 8px rgba(34, 197, 94, 0.45);
-    animation: wireSlide 2.2s infinite cubic-bezier(0.4, 0, 0.2, 1);
+  .wb-box {
+    background: var(--win-bg);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    max-height: 155px;
+    overflow-y: auto;
+    transition: border-color 220ms ease;
   }
 
-  .relay-graph.route-locked .relay-wire::after {
-    height: 2px;
-    background: linear-gradient(90deg, transparent, rgba(34, 197, 94, 0.5), var(--status-working));
-    box-shadow: 0 0 12px rgba(34, 197, 94, 0.8);
-    animation-duration: 0.72s;
+  @keyframes codeUnfoldReveal {
+    0% {
+      opacity: 0.25;
+      transform: translate3d(0, 7px, 0) scale(0.985);
+      filter: blur(3px);
+    }
+    100% {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+      filter: blur(0);
+    }
   }
 
-  .relay-graph.relaying-surge .relay-wire::after {
-    height: 3px;
-    width: 65%;
-    background: linear-gradient(90deg, transparent, #4ade80, #ecfdf5);
-    box-shadow: 0 0 16px rgba(34, 197, 94, 1);
-    animation-duration: 0.36s;
+  .wb-box.rehydrate-flash {
+    border-color: var(--accent);
+    animation: codeUnfoldReveal 280ms var(--spring-snappy);
   }
 
-  @keyframes wireSlide {
-    0% { left: -40%; opacity: 0.2; }
-    30% { opacity: 1; }
-    80% { opacity: 1; }
-    100% { left: 100%; opacity: 0.1; }
+  .wb-box-title {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    font-weight: 600;
   }
 
-  .relay-metrics {
+  .prompt-list-item {
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+  .prompt-list-item:last-child {
+    border-bottom: none;
+  }
+
+  .symbol-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-secondary);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .symbol-row:hover {
+      background: var(--row-hover);
+      color: var(--text-primary);
+      transform: translate3d(3px, 0, 0);
+    }
+  }
+  .symbol-row.active-sym {
+    background: var(--row-working);
+    color: var(--text-primary);
+    border-left: 2px solid var(--accent);
+  }
+
+  .rehydrate-btn {
+    padding: 2px 7px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-border);
+    border-radius: 4px;
+    color: var(--accent);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .code-preview-pre {
     font-family: "IBM Plex Mono", monospace;
     font-size: 10.5px;
-    color: var(--text-muted);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .diet-pill {
+    line-height: 1.45;
     color: var(--text-secondary);
-    font-weight: 500;
-    white-space: nowrap;
-    transition: color 0.2s ease;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 
-  /* Scrollable Table Viewport & Responsive Process Table */
-  .table-viewport,
-  .receipt-panel,
-  .baton-preview-box {
-    scrollbar-width: none;
-    -ms-overflow-style: none;
+  .rule-chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
   }
-  .table-viewport::-webkit-scrollbar,
-  .receipt-panel::-webkit-scrollbar,
-  .baton-preview-box::-webkit-scrollbar {
+
+  .rule-chip {
+    padding: 4px 8px;
+    background: var(--win-bg);
+    border: 1px solid var(--border-mid);
+    border-radius: var(--radius-sm);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rule-chip.mounted {
+    background: var(--accent-soft);
+    border-color: var(--accent-border);
+    color: var(--text-primary);
+  }
+
+  /* ==========================================================================
+     4. AGENT PROCESS & RELAY TABLE (PROJECT-SCOPED + EXPLICIT FROM/TO)
+     ========================================================================== */
+  .table-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 18px;
+    background: var(--win-header);
+    border-bottom: 1px solid var(--border-subtle);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  .filter-pills {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    position: relative;
+  }
+
+  .filter-glider {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 24px;
     width: 0;
-    height: 0;
-    display: none;
+    background: var(--win-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+    z-index: 1;
+    transition:
+      transform 260ms var(--spring-glide),
+      width 260ms var(--spring-glide);
+  }
+
+  .filter-pill {
+    height: 24px;
+    padding: 0 9px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+    cursor: pointer;
+    position: relative;
+    z-index: 2;
+  }
+  .filter-pill.active {
+    color: var(--text-primary);
+    font-weight: 600;
   }
 
   .table-viewport {
     flex: 1 1 auto;
-    min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
+    min-height: 0;
   }
 
   .process-table {
     width: 100%;
-    table-layout: fixed;
     border-collapse: collapse;
+    table-layout: fixed;
   }
 
-  .col-agent { width: 29%; }
-  .col-state { width: 13%; }
-  .col-quota { width: 33%; }
-  .col-seen  { width: 11%; }
-  .col-act   { width: 14%; }
+  .col-agent { width: 34%; }
+  .col-state { width: 12%; }
+  .col-quota { width: 25%; }
+  .col-seen  { width: 10%; }
+  .col-act   { width: 19%; }
 
   .process-table thead th {
     position: sticky;
     top: 0;
     z-index: 5;
-    height: 34px;
-    padding: 0 12px;
     background: var(--win-header);
-    box-shadow: inset 0 -1px 0 var(--border-subtle);
+    padding: 7px 10px;
+    text-align: left;
     font-family: "IBM Plex Mono", monospace;
     font-size: 10.5px;
     font-weight: 500;
     color: var(--text-muted);
-    text-align: left;
-    user-select: none;
+    border-bottom: 1px solid var(--border-subtle);
     white-space: nowrap;
   }
 
-  .process-table thead th:first-child { padding-left: 22px; }
-  .process-table thead th:last-child { padding-right: 22px; text-align: right; }
+  .process-table thead th:first-child { padding-left: 18px; }
+  .process-table thead th:last-child { padding-right: 18px; text-align: right; }
   .process-table thead th.num-col { text-align: right; }
 
   .process-table tbody tr {
-    height: 64px;
     border-bottom: 1px solid var(--border-subtle);
-    transition: background-color 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: background-color 140ms ease;
   }
-
-  .process-table tbody tr.row-enter {
-    animation: rowSlideIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
-    animation-delay: calc(var(--row-idx, 0) * 18ms);
-  }
-
-  @keyframes rowSlideIn {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
+  @media (hover: hover) and (pointer: fine) {
+    .process-table tbody tr:hover {
+      background: var(--row-hover);
     }
   }
-
-  .process-table tbody tr:last-child {
-    border-bottom: none;
-  }
-
-  .process-table tbody tr:hover {
-    background: var(--row-hover);
-  }
-
-  .process-table tbody tr.route-target-hover {
-    background: var(--row-hover);
-    box-shadow: inset 3px 0 0 rgba(34, 197, 94, 0.55);
-  }
-
   .process-table tbody tr.is-working {
     background: var(--row-working);
-    box-shadow: inset 3px 0 0 var(--status-working);
-  }
-
-  .process-table tbody tr.just-relayed {
-    animation: relayFlash 0.9s cubic-bezier(0.16, 1, 0.3, 1);
-  }
-
-  @keyframes relayFlash {
-    0% { background: rgba(34, 197, 94, 0.22); }
-    100% { background: var(--row-working); }
   }
 
   .process-table td {
-    padding: 0 12px;
+    padding: 8px 10px;
     vertical-align: middle;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  .process-table td:first-child { padding-left: 22px; }
-  .process-table td:last-child { padding-right: 22px; text-align: right; }
+  .process-table td:first-child { padding-left: 18px; }
+  .process-table td:last-child { padding-right: 18px; text-align: right; }
 
   .agent-cell {
     display: flex;
     align-items: center;
+    gap: 8px;
     min-width: 0;
   }
 
   .agent-info {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
     min-width: 0;
-    width: 100%;
+    flex: 1;
   }
 
   .agent-title-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
   }
 
   .agent-name {
     font-weight: 600;
-    font-size: 13.5px;
-    letter-spacing: -0.01em;
+    font-size: 12.5px;
     color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  }
+
+  .in-proj-badge {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 9.5px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-border);
+    border-radius: 4px;
+    padding: 0 5px;
+    flex-shrink: 0;
   }
 
   .model-badge {
     font-family: "IBM Plex Mono", monospace;
     font-size: 10px;
-    color: var(--text-secondary);
+    color: var(--text-muted);
     background: var(--win-elevated);
     border: 1px solid var(--border-subtle);
-    padding: 1px 5px;
-    line-height: 1.3;
-    flex-shrink: 0;
+    border-radius: 4px;
+    padding: 0 5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .agent-path {
     font-family: "IBM Plex Mono", monospace;
-    font-size: 11px;
-    color: var(--text-muted);
+    font-size: 10.5px;
+    color: var(--text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .state-badge {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    gap: 6px;
     font-family: "IBM Plex Mono", monospace;
-    font-size: 11.5px;
-    font-weight: 500;
-    padding: 3px 8px;
-    border: 1px solid transparent;
-    white-space: nowrap;
+    font-size: 11px;
   }
-
-  .state-badge.Working {
-    color: var(--status-working);
-    background: rgba(34, 197, 94, 0.08);
-    border-color: rgba(34, 197, 94, 0.25);
-  }
-
-  .state-badge.Done {
-    color: var(--text-secondary);
-    background: var(--win-elevated);
-    border-color: var(--border-subtle);
-  }
-
-  .state-badge.Idle {
-    color: var(--text-muted);
-  }
-
   .state-sq {
     width: 6px;
     height: 6px;
-    flex-shrink: 0;
+    border-radius: 2px;
   }
   .state-sq.Working { background: var(--status-working); }
   .state-sq.Done { background: var(--status-done); }
@@ -2219,330 +3230,129 @@ const HTML_PAGE = `<!DOCTYPE html>
   .quota-cell {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding-right: 12px;
-    font-family: "IBM Plex Mono", monospace;
-    font-variant-numeric: tabular-nums;
-    min-width: 0;
+    gap: 4px;
+    padding-right: 8px;
   }
-
   .quota-meta {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 8px;
-    min-width: 0;
+    gap: 6px;
+    font-family: "IBM Plex Mono", monospace;
   }
-
   .quota-val {
-    font-size: 12.5px;
+    font-size: 11.5px;
     font-weight: 600;
     color: var(--text-primary);
-    flex-shrink: 0;
   }
-
   .quota-val.subtle {
+    font-size: 10.5px;
     font-weight: 500;
     color: var(--text-secondary);
   }
-
   .quota-sub {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
   }
 
   .seg-bar {
     display: grid;
     grid-template-columns: repeat(20, 1fr);
     gap: 2px;
-    height: 6px;
-    width: 100%;
+    height: 5px;
   }
-
   .seg {
     background: var(--seg-empty);
     height: 100%;
-    transform-origin: left center;
-    transition: background-color 0.24s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s ease;
   }
-
-  .process-table tbody tr.row-enter .seg.on {
-    animation: segFillIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
-    animation-delay: calc(var(--row-idx, 0) * 16ms + var(--seg-idx, 0) * 11ms);
-  }
-
-  @keyframes segFillIn {
-    0% { opacity: 0.15; transform: scaleY(0.35); }
-    100% { opacity: 1; transform: scaleY(1); }
-  }
-
   .seg.on { background: var(--seg-fill); }
   .seg.on.working { background: var(--seg-working); }
   .seg.on.warn { background: var(--seg-warn); }
 
   .seen-cell {
     font-family: "IBM Plex Mono", monospace;
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--text-secondary);
-    font-variant-numeric: tabular-nums;
     text-align: right;
   }
 
+  .act-group {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 5px;
+  }
+
+  .set-src-btn {
+    height: 26px;
+    padding: 0 7px;
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    cursor: pointer;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .set-src-btn:hover {
+      color: var(--text-primary);
+      border-color: var(--border-strong);
+      background: var(--win-elevated);
+    }
+  }
+
   .handoff-btn {
-    width: 100px;
-    max-width: 100%;
-    height: 30px;
+    height: 26px;
+    padding: 0 10px;
     background: var(--btn-bg);
-    color: var(--text-primary);
     border: 1px solid var(--border-mid);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
     font-family: "Plus Jakarta Sans", sans-serif;
-    font-size: 12px;
+    font-size: 11.5px;
     font-weight: 600;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    gap: 6px;
-    white-space: nowrap;
-    position: relative;
-    overflow: hidden;
-    transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+    gap: 5px;
   }
-
-  .handoff-btn .arr {
-    font-family: "IBM Plex Mono", monospace;
-    font-size: 11px;
-    transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
-  }
-
-  .handoff-btn:hover {
-    background: var(--btn-bg-hover);
-    color: var(--btn-text-hover);
-    border-color: var(--btn-bg-hover);
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
-  }
-
-  .handoff-btn:hover .arr {
-    transform: translateX(3.5px);
-  }
-
-  .handoff-btn:active {
-    transform: scale(0.96);
-  }
-
-  .handoff-btn.is-relaying {
-    border-color: var(--status-working);
-    color: var(--status-working);
-    background: rgba(34, 197, 94, 0.1);
-    pointer-events: none;
+  @media (hover: hover) and (pointer: fine) {
+    .handoff-btn:hover {
+      background: var(--btn-bg-hover);
+      color: var(--btn-text-hover);
+      border-color: var(--btn-bg-hover);
+    }
   }
 
   .holding-pill {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    width: 100px;
-    max-width: 100%;
-    height: 30px;
+    gap: 5px;
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-sm);
+    background: var(--accent-soft);
+    color: var(--accent);
     font-family: "IBM Plex Mono", monospace;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--status-working);
-    border: 1px solid rgba(34, 197, 94, 0.3);
-    background: rgba(34, 197, 94, 0.06);
-    white-space: nowrap;
-    animation: holdingPulse 3s infinite ease-in-out;
-  }
-
-  @keyframes holdingPulse {
-    0%, 100% { border-color: rgba(34, 197, 94, 0.3); }
-    50% { border-color: rgba(34, 197, 94, 0.6); }
+    font-size: 10.5px;
+    font-weight: 600;
   }
 
   /* ==========================================================================
-     LIVE 5-STEP HANDOFF VERIFICATION RECEIPT PANEL
+     5. COMMAND FOOTER
      ========================================================================== */
-  .receipt-panel {
-    display: none;
-    border-top: 1px solid var(--border-mid);
-    background: var(--win-header);
-    padding: 14px 22px;
-    font-family: "IBM Plex Mono", monospace;
-    font-size: 11.5px;
-    flex-shrink: 0;
-    max-height: 42vh;
-    overflow-y: auto;
-  }
-
-  .receipt-panel.visible {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    animation: drawerSlideUp 0.26s cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
-  @keyframes drawerSlideUp {
-    from {
-      opacity: 0;
-      transform: translateY(8px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  .receipt-header {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .receipt-title {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-weight: 600;
-    color: var(--status-working);
-    font-size: 12px;
-  }
-
-  .receipt-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .steps-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 6px;
-    background: var(--win-bg);
-    border: 1px solid var(--border-subtle);
-    padding: 10px 14px;
-  }
-
-  .step-row {
-    display: grid;
-    grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
-    align-items: baseline;
-    gap: 12px;
-    font-size: 11px;
-  }
-
-  .step-row.step-cascade {
-    animation: stepReveal 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
-    animation-delay: calc(var(--step-idx, 0) * 20ms);
-  }
-
-  @keyframes stepReveal {
-    from {
-      opacity: 0;
-      transform: translateX(-6px);
-    }
-    to {
-      opacity: 1;
-      transform: translateX(0);
-    }
-  }
-
-  .step-name {
-    color: var(--text-primary);
-    font-weight: 500;
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    white-space: nowrap;
-  }
-
-  .step-ok {
-    color: var(--status-working);
-    font-weight: 600;
-  }
-
-  .step-detail {
-    color: var(--text-secondary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .baton-preview-box {
-    display: none;
-    background: var(--win-bg);
-    border: 1px solid var(--border-subtle);
-    padding: 12px;
-    max-height: 170px;
-    overflow-y: auto;
-    font-size: 11px;
-    color: var(--text-secondary);
-    white-space: pre-wrap;
-    line-height: 1.5;
-  }
-
-  .baton-preview-box.open {
-    display: block;
-  }
-
-  /* Inspector Drawer */
-  .inspector-drawer {
-    display: none;
-    padding: 12px 22px;
-    border-top: 1px solid var(--border-subtle);
-    background: var(--win-header);
-    font-family: "IBM Plex Mono", monospace;
-    font-size: 11px;
-    flex-shrink: 0;
-  }
-
-  .inspector-drawer.open {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    animation: drawerSlideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
-  .insp-col {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .insp-title {
-    color: var(--text-muted);
-    font-size: 10.5px;
-  }
-
-  .insp-list {
-    color: var(--text-secondary);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .insp-tag {
-    border: 1px solid var(--border-mid);
-    background: var(--win-bg);
-    padding: 2px 8px;
-  }
-
-  /* Command Bar Footer — Adaptive Zero-Break Layout */
   .win-footer {
     display: flex;
-    flex-wrap: nowrap;
     align-items: center;
     justify-content: space-between;
-    gap: 8px 12px;
-    min-height: 46px;
-    padding: 8px 22px;
+    gap: 10px;
+    min-height: 44px;
+    padding: 6px 18px;
     background: var(--win-header);
     border-top: 1px solid var(--border-subtle);
     flex-shrink: 0;
@@ -2550,18 +3360,17 @@ const HTML_PAGE = `<!DOCTYPE html>
 
   .footer-cmds {
     display: flex;
-    flex-wrap: nowrap;
     align-items: center;
     gap: 5px;
-    flex: 0 0 auto;
-    min-width: 0;
+    flex-wrap: wrap;
   }
 
   .cmd-btn {
     height: 28px;
-    padding: 0 8px;
+    padding: 0 9px;
     background: var(--win-bg);
     border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
     color: var(--text-secondary);
     font-family: "Plus Jakarta Sans", sans-serif;
     font-size: 11px;
@@ -2571,36 +3380,23 @@ const HTML_PAGE = `<!DOCTYPE html>
     align-items: center;
     gap: 5px;
     white-space: nowrap;
-    flex-shrink: 0;
-    transition: all 0.14s ease;
   }
-
-  .cmd-btn:hover {
-    color: var(--text-primary);
-    border-color: var(--border-mid);
+  @media (hover: hover) and (pointer: fine) {
+    .cmd-btn:hover {
+      color: var(--text-primary);
+      border-color: var(--border-mid);
+    }
   }
-
-  .cmd-btn:active,
-  .cmd-btn.kbd-pressed,
-  .theme-btn:active,
-  .theme-btn.kbd-pressed {
-    transform: scale(0.96);
-    border-color: var(--border-strong);
-    color: var(--text-primary);
-    background: var(--win-elevated);
-  }
-
   .cmd-btn.active-toggle {
     color: var(--text-primary);
-    border-color: var(--border-strong);
-    background: var(--win-elevated);
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
   }
 
   .kbd {
     font-family: "IBM Plex Mono", monospace;
     font-size: 10px;
     color: var(--text-muted);
-    padding-left: 2px;
   }
 
   .footer-receipt {
@@ -2610,82 +3406,44 @@ const HTML_PAGE = `<!DOCTYPE html>
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    flex: 1 1 0;
-    min-width: 0;
+    flex: 1;
     text-align: right;
   }
 
-  /* ==========================================================================
-     RESPONSIVE BREAKPOINTS (ANY WINDOW SIZE: WIDE / SPLIT-SCREEN / COMPACT)
-     ========================================================================== */
-  @media (max-width: 880px) {
-    .win-footer, .footer-cmds {
-      flex-wrap: wrap;
+  @media (max-width: 920px) {
+    .pipeline-bar {
+      grid-template-columns: repeat(2, 1fr);
     }
-    .footer-cmds {
-      flex: 1 1 100%;
-    }
-    .footer-receipt {
-      flex: 1 1 100%;
-      text-align: right;
-    }
-    .relay-deck {
+    .wb-grid-2 {
       grid-template-columns: 1fr;
-      gap: 12px;
     }
     .col-seen, .th-seen, .seen-cell {
       display: none;
     }
-    .col-agent { width: 35%; }
+    .col-agent { width: 38%; }
     .col-state { width: 13%; }
-    .col-quota { width: 35%; }
-    .col-act   { width: 17%; }
-    .step-row {
-      grid-template-columns: 1fr;
-      gap: 2px;
-    }
-    .inspector-drawer.open {
-      grid-template-columns: 1fr;
-      gap: 10px;
-    }
+    .col-quota { width: 27%; }
+    .col-act   { width: 22%; }
   }
 
   @media (max-width: 640px) {
-    body {
-      padding: 0;
-    }
+    body { padding: 0; }
     .app-window {
       width: 100%;
-      height: 100vh;
-      max-height: 100vh;
-      border-left: none;
-      border-right: none;
+      height: 100dvh;
+      max-height: 100dvh;
+      border-radius: 0;
+      border: none;
     }
-    .win-topbar, .relay-deck, .win-footer, .receipt-panel, .inspector-drawer {
-      padding-left: 14px;
-      padding-right: 14px;
+    .goal-route-row {
+      grid-template-columns: 1fr;
     }
-    .process-table thead th:first-child,
-    .process-table td:first-child {
-      padding-left: 14px;
-    }
-    .process-table thead th:last-child,
-    .process-table td:last-child {
-      padding-right: 14px;
-    }
-    .telemetry-badge {
+    .col-state, .th-state, .td-state, .set-src-btn {
       display: none;
     }
-    .col-state, .th-state, .td-state {
-      display: none;
-    }
-    .col-agent { width: 42%; }
-    .col-quota { width: 36%; }
+    .col-agent { width: 44%; }
+    .col-quota { width: 34%; }
     .col-act   { width: 22%; }
-    .handoff-btn, .holding-pill {
-      width: 88px;
-      font-size: 11px;
-    }
   }
 </style>
 </head>
@@ -2693,7 +3451,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
   <div class="app-window">
 
-    <!-- 1. Top Brand & One-Click Workspace Bar -->
+    <!-- 1. Topbar: Project Switcher + Add Project Popover + Live Kinetic Compression Telemetry -->
     <header class="win-topbar">
       <div class="brand-cluster">
         <div class="official-logo-box">
@@ -2701,16 +3459,45 @@ const HTML_PAGE = `<!DOCTYPE html>
         </div>
         <div class="brand-name-wrap">
           <span class="brand-name">Vicem</span>
-          <span class="brand-ver">v1.0</span>
+          <span class="brand-ver">v1.1</span>
         </div>
-        <div class="ws-tabs" id="ws-tabs"></div>
+        <div class="ws-switcher-bar" id="ws-tabs"></div>
+        <button class="add-ws-btn" id="btn-add-ws" onclick="toggleAddWorkspacePopover(event)" title="Open or add any project directory">
+          <span>+ Project</span>
+        </button>
+      </div>
+
+      <!-- Origin-Aware Add Project Popover -->
+      <div class="ws-popover" id="add-ws-popover">
+        <div class="ws-pop-title">
+          <span>Switch or Add Project Directory</span>
+          <button class="cmd-btn" style="height:22px;padding:0 6px" onclick="closeAddWorkspacePopover()">Close</button>
+        </div>
+        <form class="ws-pop-form" onsubmit="submitCustomWorkspace(event)">
+          <input
+            type="text"
+            class="ws-pop-input"
+            id="custom-ws-input"
+            placeholder="Paste path e.g. ~/Documents/my-repo"
+          />
+          <button type="submit" class="cmd-btn active-toggle" style="height:30px">Open</button>
+        </form>
+        <div class="wb-box-title">Discovered Workspaces on This Machine</div>
+        <div class="ws-pop-list" id="ws-pop-list"></div>
       </div>
 
       <div class="topbar-right">
-        <div class="telemetry-badge">
-          <span class="pulse-dot"></span>
-          <span id="mounted-status">Live telemetry</span>
+        <div class="combo-pill" id="combo-pill" title="Live 4-Stage Context Diet token stream">
+          <span id="stat-tokens">Loading...</span>
         </div>
+        <div class="diet-meter-hud" id="diet-meter-hud" title="Live AST Skeletonizer &amp; Compression Ratio">
+          <span class="ast-count-badge" id="hud-ast-count">0 AST Symbols</span>
+          <div class="diet-bar-wrap">
+            <div class="diet-bar-fill" id="hud-diet-fill"></div>
+          </div>
+          <span class="diet-pct-val" id="hud-diet-pct">-0%</span>
+        </div>
+        <div class="action-toast" id="action-toast">Synced</div>
         <button class="theme-btn" onclick="toggleTheme()" title="Toggle Light / Dark Mode (T)">
           <span id="theme-icon">☀</span>
           <span id="theme-label">Light</span>
@@ -2719,17 +3506,24 @@ const HTML_PAGE = `<!DOCTYPE html>
       </div>
     </header>
 
-    <!-- 2. Live Baton Relay Deck -->
-    <section class="relay-deck">
-      <div class="deck-left">
-        <div class="deck-eyebrow">
-          <span>Active session baton</span>
-          <span>·</span>
-          <span class="branch-tag" id="branch-badge">workspace (main)</span>
-          <span>·</span>
-          <span>Editable handoff instruction</span>
+    <!-- 2. Project Sessions Strip (Explicit Source Selection) & Goal Bar -->
+    <section class="session-deck crossfade-surface" id="session-deck">
+      <div class="session-strip-header">
+        <div class="session-strip-label">
+          <span>Project Sessions in</span>
+          <span class="project-path-pill" id="active-project-pill">~/workspace</span>
+          <span id="session-count-label">· Click any session to lock as Source Baton</span>
         </div>
+        <div class="session-strip-label">
+          <span id="mounted-status">No rules mounted</span>
+        </div>
+      </div>
+
+      <div class="session-cards" id="session-cards"></div>
+
+      <div class="goal-route-row">
         <div class="prompt-input-wrap">
+          <span class="prompt-prefix">GOAL &gt;</span>
           <input
             type="text"
             class="prompt-input"
@@ -2738,25 +3532,83 @@ const HTML_PAGE = `<!DOCTYPE html>
             placeholder="Type handoff goal or instruction before relaying..."
             onchange="saveCustomGoal(this.value)"
           />
-          <span class="prompt-edit-hint">✎ Edit</span>
+          <span class="prompt-edit-hint">Edit</span>
         </div>
-      </div>
 
-      <div class="relay-graph">
-        <div class="relay-nodes">
-          <span class="relay-endpoint" id="relay-source">Antigravity</span>
-          <div class="relay-wire"></div>
-          <span class="relay-endpoint target-preview" id="relay-target">Select target</span>
-        </div>
-        <div class="relay-metrics">
-          <span class="diet-pill" id="stat-tokens">—</span>
-          <span id="stat-secrets">0 masked</span>
+        <div class="relay-route-pill" id="relay-route-pill">
+          <span>FROM</span>
+          <span class="route-from" id="relay-source">Antigravity</span>
+          <span class="route-arrow">-&gt;</span>
+          <span class="route-to" id="relay-target">Select target below</span>
         </div>
       </div>
     </section>
 
-    <!-- 3. Fluid Responsive Agent Process & Quota Table -->
-    <div class="table-viewport">
+    <!-- 3. Live 4-Node Core Pipeline Stepper (With Sliding Layout-Projection Glider) -->
+    <section class="pipeline-bar" id="pipeline-bar">
+      <div class="pipe-glider" id="pipe-glider"></div>
+
+      <button class="pipe-node" id="pipe-node-1" onclick="selectWorkbenchTab('harvest')">
+        <div class="pipe-top">
+          <span class="pipe-title">1. Harvest Session</span>
+          <span class="pipe-badge ok" id="pipe-badge-1">Active</span>
+        </div>
+        <div class="pipe-sub" id="pipe-sub-1">Scanning session logs...</div>
+      </button>
+
+      <button class="pipe-node" id="pipe-node-2" onclick="selectWorkbenchTab('skeleton')">
+        <div class="pipe-top">
+          <span class="pipe-title">2. Skeletonize AST</span>
+          <span class="pipe-badge ok" id="pipe-badge-2">0 symbols</span>
+        </div>
+        <div class="pipe-sub" id="pipe-sub-2">Computing AST diet...</div>
+      </button>
+
+      <button class="pipe-node" id="pipe-node-3" onclick="selectWorkbenchTab('ledger')">
+        <div class="pipe-top">
+          <span class="pipe-title">3. Index Ledger &amp; Rules</span>
+          <span class="pipe-badge" id="pipe-badge-3">Preview</span>
+        </div>
+        <div class="pipe-sub" id="pipe-sub-3">.vicem/BATON.md &amp; ledger.json</div>
+      </button>
+
+      <button class="pipe-node" id="pipe-node-4" onclick="selectWorkbenchTab('receipt')">
+        <div class="pipe-top">
+          <span class="pipe-title">4. Relay Verification</span>
+          <span class="pipe-badge" id="pipe-badge-4">Ready</span>
+        </div>
+        <div class="pipe-sub" id="pipe-sub-4">Click Hand off on any target</div>
+      </button>
+    </section>
+
+    <!-- Interactive Workbench Drawer (Shows Live Internals of Selected Pipeline Stage) -->
+    <section class="workbench-drawer crossfade-surface" id="workbench-drawer">
+      <div class="wb-header">
+        <span class="wb-title" id="wb-title">Pipeline Inspector</span>
+        <div class="wb-actions">
+          <button class="cmd-btn active-toggle" style="height:24px" onclick="syncDietToDisk()">
+            <span>Sync Diet to Disk</span>
+          </button>
+          <button class="cmd-btn" style="height:24px" onclick="closeWorkbench()">
+            <span>Close</span>
+          </button>
+        </div>
+      </div>
+      <div id="wb-body"></div>
+    </section>
+
+    <!-- 4. Project-Scoped Agent Relay Table -->
+    <div class="table-toolbar">
+      <div class="filter-pills" id="filter-pills-wrap">
+        <div class="filter-glider" id="filter-glider"></div>
+        <button class="filter-pill active" id="filter-installed" onclick="setAgentFilter('installed')">Installed &amp; Primary</button>
+        <button class="filter-pill" id="filter-project" onclick="setAgentFilter('project')">In This Project</button>
+        <button class="filter-pill" id="filter-all" onclick="setAgentFilter('all')">All 12 Platforms</button>
+      </div>
+      <span id="table-scope-hint" style="color:var(--text-muted)">Showing agents synced with active workspace</span>
+    </div>
+
+    <div class="table-viewport crossfade-surface" id="table-viewport">
       <table class="process-table">
         <colgroup>
           <col class="col-agent" />
@@ -2767,135 +3619,74 @@ const HTML_PAGE = `<!DOCTYPE html>
         </colgroup>
         <thead>
           <tr>
-            <th>Agent &amp; Workspace</th>
-            <th class="th-state">State</th>
+            <th>Agent &amp; Project Session Context</th>
+            <th class="th-state">Role</th>
             <th>Remaining Capacity</th>
             <th class="num-col th-seen">Last Activity</th>
-            <th>Relay Baton</th>
+            <th>Source / Target Relay</th>
           </tr>
         </thead>
         <tbody id="agent-rows"></tbody>
       </table>
     </div>
 
-    <!-- 4. Live 5-Step Handoff Verification Receipt Panel (Appears on Handoff) -->
-    <section class="receipt-panel" id="receipt-panel">
-      <div class="receipt-header">
-        <span class="receipt-title" id="receipt-title">✓ Handoff Execution Verified</span>
-        <div class="receipt-actions">
-          <button class="cmd-btn" onclick="toggleBatonPreview()">
-            <span id="btn-preview-label">View .vicem/BATON.md</span>
-          </button>
-          <button class="cmd-btn" onclick="closeReceiptPanel()">
-            <span>Dismiss</span>
-          </button>
-        </div>
-      </div>
-      <div class="steps-grid" id="receipt-steps"></div>
-      <pre class="baton-preview-box" id="baton-preview-box"></pre>
-    </section>
-
-    <!-- 5. Collapsible Inspector Drawer -->
-    <div class="inspector-drawer" id="inspector-drawer">
-      <div class="insp-col">
-        <span class="insp-title">Tracked modified files in baton</span>
-        <div class="insp-list" id="insp-files"></div>
-      </div>
-      <div class="insp-col">
-        <span class="insp-title">Mounted rule files in workspace</span>
-        <div class="insp-list" id="insp-mounts"></div>
-      </div>
-    </div>
-
-    <!-- 6. Command Bar Footer -->
+    <!-- 5. Command Bar Footer -->
     <footer class="win-footer">
       <div class="footer-cmds">
-        <button class="cmd-btn" onclick="triggerSelfDiet()">
-          <span>Compact current</span>
+        <button class="cmd-btn active-toggle" onclick="syncDietToDisk()">
+          <span>Sync Diet &amp; Ledger</span>
           <span class="kbd">R</span>
         </button>
         <button class="cmd-btn" onclick="triggerBack()">
-          <span>Return to previous</span>
+          <span>Return Previous</span>
           <span class="kbd">Z</span>
         </button>
         <button class="cmd-btn" onclick="copyBaton()">
-          <span>Copy baton</span>
+          <span>Copy Baton</span>
           <span class="kbd">C</span>
         </button>
-        <button class="cmd-btn" id="btn-inspect" onclick="toggleInspector()">
-          <span>Inspect files</span>
+        <button class="cmd-btn" id="btn-inspect" onclick="toggleWorkbenchDrawer()">
+          <span>Pipeline Inspector</span>
           <span class="kbd">I</span>
         </button>
-        <button class="cmd-btn" id="btn-all-platforms" onclick="toggleAllPlatforms()">
-          <span id="platforms-label">All 12 platforms</span>
-          <span class="kbd">A</span>
-        </button>
-        <button class="cmd-btn active-toggle" id="btn-launch-toggle" onclick="toggleLaunchApp()">
+        <button class="cmd-btn" id="btn-launch-toggle" onclick="toggleLaunchApp()">
           <span id="launch-label">Launch: Desktop App</span>
         </button>
       </div>
-      <div class="footer-receipt" id="status-line">Ready · Desktop App launch enabled</div>
+      <div class="footer-receipt" id="status-line">Ready · Click any session card or pipeline node to inspect</div>
     </footer>
 
   </div>
 
 <script>
-  const CLIENT_GUI_VERSION = 'v16';
+  const CLIENT_GUI_VERSION = 'v18';
   const urlParams = new URLSearchParams(window.location.search);
   const isStaticMode = Boolean(navigator.webdriver || urlParams.get('static') === '1');
-  const isDemoMode = urlParams.get('demo') === '1';
   if (isStaticMode) {
     document.documentElement.classList.add('no-anim');
   }
+
   let state = null;
   let currentTheme = localStorage.getItem('vicem-theme') || 'dark';
-  let launchMode = 'app'; // 'app' (Desktop GUI App) | 'cli' (Terminal CLI) | 'off' (Clipboard only)
-  let inspectorOpen = false;
-  let showAllPlatforms = new URLSearchParams(window.location.search).get('all') === '1';
-  let batonPreviewOpen = false;
-  let receiptDismissed = false;
+  let launchMode = 'app';
+  let agentFilter = urlParams.get('all') === '1' ? 'all' : 'installed';
+  let activeWorkbenchTab = 'skeleton';
+  let workbenchOpen = true;
   let isEditingGoal = false;
-  let lastRenderedReceiptTs = null;
-  let lastAnimRaw = 0;
-  let lastAnimDiet = 0;
   let relayingTargetId = null;
+  let rehydratedPreview = null;
+  let displayedRawTokens = 0;
+  let displayedDietTokens = 0;
+  let displayedSymbols = 0;
+  let justRehydratedFlash = false;
 
-  if (showAllPlatforms) {
-    document.getElementById('btn-all-platforms').classList.add('active-toggle');
-    document.getElementById('platforms-label').textContent = 'Installed only';
-  }
-
-  function flashKeybindButton(selector) {
-    const btn = document.querySelector(selector);
-    if (!btn) return;
-    btn.classList.add('kbd-pressed');
-    setTimeout(() => btn.classList.remove('kbd-pressed'), 160);
-  }
-
-  function animateTokenStats(rawTarget, dietTarget, savedPct) {
-    const el = document.getElementById('stat-tokens');
-    if (!el) return;
-    if (isStaticMode || (lastAnimRaw === rawTarget && lastAnimDiet === dietTarget)) {
-      lastAnimRaw = rawTarget;
-      lastAnimDiet = dietTarget;
-      el.textContent = \`\${rawTarget.toLocaleString()} → \${dietTarget.toLocaleString()} tok (-\${savedPct}%)\`;
-      return;
-    }
-    const startRaw = lastAnimRaw || rawTarget;
-    const startDiet = lastAnimDiet || dietTarget;
-    lastAnimRaw = rawTarget;
-    lastAnimDiet = dietTarget;
-    const startTime = performance.now();
-    const duration = 360;
-    function tick(now) {
-      const t = Math.min(1, (now - startTime) / duration);
-      const ease = 1 - Math.pow(1 - t, 3);
-      const curRaw = Math.round(startRaw + (rawTarget - startRaw) * ease);
-      const curDiet = Math.round(startDiet + (dietTarget - startDiet) * ease);
-      el.textContent = \`\${curRaw.toLocaleString()} → \${curDiet.toLocaleString()} tok (-\${savedPct}%)\`;
-      if (t < 1) requestAnimationFrame(tick);
-    }
-    requestAnimationFrame(tick);
+  function escapeHtml(str) {
+    return String(str || '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
   }
 
   function applyTheme(theme) {
@@ -2903,7 +3694,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('vicem-theme', theme);
     const logoImg = document.getElementById('official-logo');
-    logoImg.src = theme === 'light' ? '/logo-light.png' : '/logo-dark.png';
+    if (logoImg) logoImg.src = theme === 'light' ? '/logo-light.png' : '/logo-dark.png';
     document.getElementById('theme-icon').textContent = theme === 'light' ? '☾' : '☀';
     document.getElementById('theme-label').textContent = theme === 'light' ? 'Dark' : 'Light';
   }
@@ -2912,7 +3703,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
   }
 
-  const urlTheme = new URLSearchParams(window.location.search).get('theme');
+  const urlTheme = urlParams.get('theme');
   if (urlTheme === 'light' || urlTheme === 'dark') {
     applyTheme(urlTheme);
   } else {
@@ -2925,6 +3716,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
   function setStatus(msg) {
     const el = document.getElementById('status-line');
+    if (!el) return;
     el.textContent = msg;
     el.style.color = 'var(--text-primary)';
     setTimeout(() => {
@@ -2932,21 +3724,293 @@ const HTML_PAGE = `<!DOCTYPE html>
     }, 3200);
   }
 
-  function previewRoute(targetName, targetId) {
-    const el = document.getElementById('relay-target');
-    const graph = document.querySelector('.relay-graph');
+  function popActionToast(text) {
+    const t = document.getElementById('action-toast');
+    if (!t) return;
+    t.textContent = text;
+    t.classList.add('show');
+    const meter = document.getElementById('diet-meter-hud');
+    if (meter) {
+      meter.classList.remove('pulse-sheen');
+      void meter.offsetWidth;
+      meter.classList.add('pulse-sheen');
+    }
+    const combo = document.getElementById('combo-pill');
+    if (combo) {
+      combo.classList.add('bump');
+      setTimeout(() => combo.classList.remove('bump'), 240);
+    }
+    clearTimeout(t._timer);
+    t._timer = setTimeout(() => t.classList.remove('show'), 1900);
+  }
+
+  function triggerCrossfade(elId) {
+    if (isStaticMode) return;
+    const el = document.getElementById(elId);
     if (!el) return;
-    document.querySelectorAll('#agent-rows tr').forEach(r => {
-      r.classList.toggle('route-target-hover', Boolean(targetId && r.dataset.agentId === targetId));
+    el.classList.add('is-transitioning');
+    setTimeout(() => el.classList.remove('is-transitioning'), 150);
+  }
+
+  // Sequential 4-stage kinetic wave across the pipeline nodes
+  function triggerPipelineWave() {
+    if (isStaticMode) return;
+    ['1', '2', '3', '4'].forEach((id, idx) => {
+      setTimeout(() => {
+        const node = document.getElementById('pipe-node-' + id);
+        if (!node) return;
+        node.classList.remove('wave-hit');
+        void node.offsetWidth;
+        node.classList.add('wave-hit');
+      }, idx * 75);
     });
+  }
+
+  // Smooth layout-projection glider positioning for Pipeline Stepper & Filter Pills
+  function positionGliders() {
+    const pipeGlider = document.getElementById('pipe-glider');
+    const tabIndexMap = { harvest: '1', skeleton: '2', ledger: '3', receipt: '4' };
+    const activeNode = workbenchOpen ? document.getElementById('pipe-node-' + tabIndexMap[activeWorkbenchTab]) : null;
+    if (pipeGlider && activeNode) {
+      pipeGlider.style.width = activeNode.offsetWidth + 'px';
+      pipeGlider.style.height = activeNode.offsetHeight + 'px';
+      pipeGlider.style.transform = 'translate3d(' + activeNode.offsetLeft + 'px, ' + activeNode.offsetTop + 'px, 0)';
+      pipeGlider.classList.add('visible');
+    } else if (pipeGlider) {
+      pipeGlider.classList.remove('visible');
+    }
+
+    const filterGlider = document.getElementById('filter-glider');
+    const filterMap = { installed: 'filter-installed', project: 'filter-project', all: 'filter-all' };
+    const activePill = document.getElementById(filterMap[agentFilter]);
+    if (filterGlider && activePill) {
+      filterGlider.style.width = activePill.offsetWidth + 'px';
+      filterGlider.style.transform = 'translate3d(' + activePill.offsetLeft + 'px, 0, 0)';
+    }
+  }
+
+  window.addEventListener('resize', positionGliders);
+
+  // Rolling odometer animation for token & symbol counters
+  function animateTelemetryNumbers(targetRaw, targetDiet, savedPct, targetSymbols) {
+    const statEl = document.getElementById('stat-tokens');
+    const astEl = document.getElementById('hud-ast-count');
+    const pctEl = document.getElementById('hud-diet-pct');
+    const fillEl = document.getElementById('hud-diet-fill');
+
+    if (pctEl) pctEl.textContent = '-' + savedPct + '%';
+    if (fillEl) {
+      const insetRight = Math.max(0, 100 - Math.min(100, Math.max(10, Math.round(savedPct))));
+      fillEl.style.clipPath = 'inset(0 ' + insetRight + '% 0 0)';
+    }
+
+    if (isStaticMode || (displayedRawTokens === targetRaw && displayedDietTokens === targetDiet && displayedSymbols === targetSymbols)) {
+      displayedRawTokens = targetRaw;
+      displayedDietTokens = targetDiet;
+      displayedSymbols = targetSymbols;
+      if (statEl) {
+        statEl.textContent =
+          targetRaw.toLocaleString() + ' -> ' + targetDiet.toLocaleString() + ' tok (-' + savedPct + '%)';
+      }
+      if (astEl) astEl.textContent = targetSymbols + ' AST Symbols';
+      return;
+    }
+
+    const startRaw = displayedRawTokens || targetRaw;
+    const startDiet = displayedDietTokens || targetDiet;
+    const startSym = displayedSymbols || targetSymbols;
+    const startTime = performance.now();
+    const duration = 360;
+
+    function tick(now) {
+      const t = Math.min(1, (now - startTime) / duration);
+      const ease = 1 - Math.pow(1 - t, 3);
+      const curRaw = Math.round(startRaw + (targetRaw - startRaw) * ease);
+      const curDiet = Math.round(startDiet + (targetDiet - startDiet) * ease);
+      const curSym = Math.round(startSym + (targetSymbols - startSym) * ease);
+      if (statEl) {
+        statEl.textContent =
+          curRaw.toLocaleString() + ' -> ' + curDiet.toLocaleString() + ' tok (-' + savedPct + '%)';
+      }
+      if (astEl) astEl.textContent = curSym + ' AST Symbols';
+      if (t < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        displayedRawTokens = targetRaw;
+        displayedDietTokens = targetDiet;
+        displayedSymbols = targetSymbols;
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+
+  function toggleAddWorkspacePopover(e) {
+    if (e) e.stopPropagation();
+    const pop = document.getElementById('add-ws-popover');
+    pop.classList.toggle('open');
+    if (pop.classList.contains('open')) {
+      setTimeout(() => document.getElementById('custom-ws-input')?.focus(), 40);
+    }
+  }
+
+  function closeAddWorkspacePopover() {
+    document.getElementById('add-ws-popover')?.classList.remove('open');
+  }
+
+  document.addEventListener('click', (e) => {
+    const pop = document.getElementById('add-ws-popover');
+    const btn = document.getElementById('btn-add-ws');
+    if (pop && pop.classList.contains('open') && !pop.contains(e.target) && !btn.contains(e.target)) {
+      pop.classList.remove('open');
+    }
+  });
+
+  async function submitCustomWorkspace(e) {
+    e.preventDefault();
+    const inp = document.getElementById('custom-ws-input');
+    const rawPath = (inp?.value || '').trim();
+    if (!rawPath) return;
+    setStatus('Opening project directory...');
+    const res = await fetch('/api/add-workspace', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rawPath }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      setStatus(data.error);
+      return;
+    }
+    inp.value = '';
+    closeAddWorkspacePopover();
+    rehydratedPreview = null;
+    triggerCrossfade('session-deck');
+    triggerCrossfade('table-viewport');
+    state = data;
+    render();
+    triggerPipelineWave();
+    popActionToast('✓ Workspace Opened · ' + state.project);
+    setStatus('Switched project to ' + state.project);
+  }
+
+  async function switchWorkspace(projectRoot) {
+    closeAddWorkspacePopover();
+    setStatus('Switching project context...');
+    rehydratedPreview = null;
+    triggerCrossfade('session-deck');
+    triggerCrossfade('table-viewport');
+    const res = await fetch('/api/workspace', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectRoot }),
+    });
+    state = await res.json();
+    render();
+    triggerPipelineWave();
+    popActionToast('✓ Project Synced · ' + state.project);
+    setStatus('Switched project to ' + state.project + ' (' + state.branch + ')');
+  }
+
+  async function selectSourceSession(agentId, sessionId) {
+    setStatus('Locking source session...');
+    rehydratedPreview = null;
+    triggerCrossfade('workbench-drawer');
+    const res = await fetch('/api/source', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId, sessionId }),
+    });
+    state = await res.json();
+    render();
+    triggerPipelineWave();
+    popActionToast('✓ Source Locked · ' + agentId);
+    setStatus('Source baton locked to ' + agentId + (sessionId ? ' (' + sessionId + ')' : ''));
+  }
+
+  async function syncDietToDisk() {
+    setStatus('Running 4-Stage Context Diet & writing .vicem/BATON.md + ledger.json...');
+    triggerPipelineWave();
+    const res = await fetch('/api/sync-diet', { method: 'POST' });
+    state = await res.json();
+    workbenchOpen = true;
+    activeWorkbenchTab = 'ledger';
+    render();
+    popActionToast('✓ Synced .vicem/BATON.md & ' + (state.skeletonSummary?.totalSymbols || 0) + ' Symbols');
+    setStatus(state.actionReceipt || 'Synced .vicem/BATON.md and .vicem/ledger.json to disk');
+  }
+
+  async function testRehydrateSymbol(filePath, symbolName) {
+    setStatus('Rehydrating ' + symbolName + ' from .vicem/ledger.json...');
+    const res = await fetch('/api/rehydrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath, symbolName }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      rehydratedPreview = data;
+      justRehydratedFlash = true;
+      renderWorkbench();
+      justRehydratedFlash = false;
+      popActionToast('✓ Rehydrated · ' + symbolName);
+      setStatus('Rehydrated ' + symbolName + ' from ' + filePath + ' (lossless AST body verified)');
+    }
+  }
+
+  async function toggleRuleMount(relPath) {
+    setStatus('Updating rule file ' + relPath + '...');
+    const res = await fetch('/api/toggle-rule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ relPath }),
+    });
+    state = await res.json();
+    render();
+    popActionToast('✓ Rule Mount Updated · ' + relPath);
+    setStatus('Updated rule mount for ' + relPath);
+  }
+
+  function selectWorkbenchTab(tabName) {
+    if (workbenchOpen && activeWorkbenchTab === tabName) {
+      workbenchOpen = false;
+    } else {
+      workbenchOpen = true;
+      activeWorkbenchTab = tabName;
+      triggerCrossfade('workbench-drawer');
+    }
+    render();
+  }
+
+  function toggleWorkbenchDrawer() {
+    workbenchOpen = !workbenchOpen;
+    render();
+  }
+
+  function closeWorkbench() {
+    workbenchOpen = false;
+    render();
+  }
+
+  function setAgentFilter(mode) {
+    agentFilter = mode;
+    document.getElementById('filter-installed').classList.toggle('active', mode === 'installed');
+    document.getElementById('filter-project').classList.toggle('active', mode === 'project');
+    document.getElementById('filter-all').classList.toggle('active', mode === 'all');
+    render();
+  }
+
+  function previewRoute(targetName) {
+    const el = document.getElementById('relay-target');
+    const pill = document.getElementById('relay-route-pill');
+    if (!el) return;
     if (targetName) {
       el.textContent = targetName;
-      el.classList.add('active-route');
-      if (graph) graph.classList.add('route-locked');
+      el.classList.add('locked');
+      pill?.classList.add('route-active');
     } else if (!relayingTargetId) {
-      el.textContent = 'Select target';
-      el.classList.remove('active-route');
-      if (graph) graph.classList.remove('route-locked');
+      el.textContent = 'Select target below';
+      el.classList.remove('locked');
+      pill?.classList.remove('route-active');
     }
   }
 
@@ -2961,7 +4025,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         if (isWarn) cls += ' warn';
         else if (isWorking) cls += ' working';
       }
-      html += \`<span class="\${cls}" style="--seg-idx:\${i}"></span>\`;
+      html += '<span class="' + cls + '"></span>';
     }
     html += '</div>';
     return html;
@@ -2980,55 +4044,11 @@ const HTML_PAGE = `<!DOCTYPE html>
       setStatus('Mode: Open Desktop GUI App (Claude.app / ChatGPT.app / IDE)');
     } else if (launchMode === 'cli') {
       lbl.textContent = 'Launch: Terminal CLI';
-      setStatus('Mode: Open Terminal.app running CLI binary');
+      setStatus('Mode: Open native terminal running CLI binary');
     } else {
       lbl.textContent = 'Launch: Off (Copy only)';
       setStatus('Mode: Copy baton + mount rule file only');
     }
-  }
-
-  function toggleInspector() {
-    inspectorOpen = !inspectorOpen;
-    document.getElementById('inspector-drawer').classList.toggle('open', inspectorOpen);
-    document.getElementById('btn-inspect').classList.toggle('active-toggle', inspectorOpen);
-  }
-
-  function toggleAllPlatforms() {
-    showAllPlatforms = !showAllPlatforms;
-    document.getElementById('btn-all-platforms').classList.toggle('active-toggle', showAllPlatforms);
-    document.getElementById('platforms-label').textContent = showAllPlatforms
-      ? 'Installed only'
-      : 'All 12 platforms';
-    render();
-    setStatus(
-      showAllPlatforms
-        ? 'Showing all 12 supported platforms (macOS / Windows / Linux)'
-        : 'Showing installed & primary platforms'
-    );
-  }
-
-  function toggleBatonPreview() {
-    batonPreviewOpen = !batonPreviewOpen;
-    document.getElementById('baton-preview-box').classList.toggle('open', batonPreviewOpen);
-    document.getElementById('btn-preview-label').textContent =
-      batonPreviewOpen ? 'Hide .vicem/BATON.md' : 'View .vicem/BATON.md';
-  }
-
-  function closeReceiptPanel() {
-    receiptDismissed = true;
-    document.getElementById('receipt-panel').classList.remove('visible');
-  }
-
-  async function switchWorkspace(projectRoot) {
-    setStatus('Switching workspace...');
-    const res = await fetch('/api/workspace', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectRoot }),
-    });
-    state = await res.json();
-    render();
-    setStatus(\`Switched workspace to \${state.project}\`);
   }
 
   async function saveCustomGoal(goal) {
@@ -3039,169 +4059,398 @@ const HTML_PAGE = `<!DOCTYPE html>
     });
     state = await res.json();
     render();
-    setStatus('Updated handoff instruction');
+    setStatus('Updated handoff goal instruction');
+  }
+
+  function renderWorkbench() {
+    const drawer = document.getElementById('workbench-drawer');
+    const titleEl = document.getElementById('wb-title');
+    const bodyEl = document.getElementById('wb-body');
+    const inspectBtn = document.getElementById('btn-inspect');
+
+    if (!state || !workbenchOpen) {
+      drawer.classList.remove('open');
+      if (inspectBtn) inspectBtn.classList.remove('active-toggle');
+      ['1', '2', '3', '4'].forEach((n) => document.getElementById('pipe-node-' + n)?.classList.remove('active-tab'));
+      positionGliders();
+      return;
+    }
+
+    drawer.classList.add('open');
+    if (inspectBtn) inspectBtn.classList.add('active-toggle');
+
+    const tabIndexMap = { harvest: '1', skeleton: '2', ledger: '3', receipt: '4' };
+    ['1', '2', '3', '4'].forEach((n) => {
+      document.getElementById('pipe-node-' + n)?.classList.toggle('active-tab', tabIndexMap[activeWorkbenchTab] === n);
+    });
+    positionGliders();
+
+    const sk = state.skeletonSummary || { files: [], totalSymbols: 0 };
+    const selectedSess = (state.projectSessions || []).find((s) => s.isSelected) || (state.projectSessions || [])[0];
+
+    if (activeWorkbenchTab === 'harvest') {
+      titleEl.textContent = 'Stage 1 · Harvested Session Timeline & Active Git Tree (' + state.project + ')';
+      const prompts = (selectedSess?.prompts || []).slice().reverse();
+      const promptsHtml = prompts.length
+        ? prompts.map((p, idx) => '<div class="prompt-list-item"><strong>#' + (prompts.length - idx) + '</strong> ' + escapeHtml(p) + '</div>').join('')
+        : '<div class="prompt-list-item">No user prompts recorded in this session yet.</div>';
+
+      const filesHtml = (state.modifiedFiles || []).length
+        ? state.modifiedFiles.map((f) => '<div class="prompt-list-item">' + escapeHtml(f) + '</div>').join('')
+        : '<div class="prompt-list-item">Working tree clean (using recent project files).</div>';
+
+      bodyEl.innerHTML =
+        '<div class="wb-grid-2">' +
+          '<div class="wb-box">' +
+            '<div class="wb-box-title">Recent Prompts from Source (' + escapeHtml(selectedSess?.agentName || state.workingAgentId) + ' · ' + escapeHtml(selectedSess?.sourceFile || '') + ')</div>' +
+            promptsHtml +
+          '</div>' +
+          '<div class="wb-box">' +
+            '<div class="wb-box-title">Tracked / Modified Files Included in Baton (' + (state.modifiedFiles || []).length + ')</div>' +
+            filesHtml +
+          '</div>' +
+        '</div>';
+    } else if (activeWorkbenchTab === 'skeleton') {
+      titleEl.textContent =
+        'Stage 2 · Live AST Code Skeletonizer & Lossless Symbol Rehydration (' +
+        sk.totalSymbols +
+        ' functions indexed)';
+
+      const allSymbols = [];
+      for (const f of sk.files || []) {
+        for (const sym of f.symbols || []) {
+          allSymbols.push({ ...sym, savedPct: f.savedPct });
+        }
+      }
+
+      const symRowsHtml = allSymbols.length
+        ? allSymbols
+            .slice(0, 16)
+            .map(
+              (s) =>
+                '<div class="symbol-row' +
+                (rehydratedPreview && rehydratedPreview.symbolName === s.symbolName ? ' active-sym' : '') +
+                '" onclick="testRehydrateSymbol(\\'' +
+                escapeHtml(s.filePath) +
+                '\\', \\'' +
+                escapeHtml(s.symbolName) +
+                '\\')">' +
+                '<span><strong>' +
+                escapeHtml(s.symbolName) +
+                '</strong> <span style="color:var(--text-muted)">(' +
+                escapeHtml(s.filePath) +
+                ':L' +
+                s.startLine +
+                '-' +
+                s.endLine +
+                ' · ' +
+                s.tokens +
+                ' tok)</span></span>' +
+                '<button class="rehydrate-btn">Rehydrate</button>' +
+                '</div>'
+            )
+            .join('')
+        : '<div class="prompt-list-item">No multi-line functions detected to skeletonize in active files.</div>';
+
+      const rightBoxTitle = rehydratedPreview
+        ? 'Rehydrated Symbol: ' + escapeHtml(rehydratedPreview.symbolName) + ' (' + escapeHtml(rehydratedPreview.filePath) + ')'
+        : 'Skeletonized File Preview (' + escapeHtml(sk.files[0]?.filePath || 'Active Code') + ' · -' + (sk.codeSavedPct || 0) + '% tokens)';
+      const rightBoxCode = rehydratedPreview
+        ? rehydratedPreview.rehydratedCode
+        : sk.files[0]?.skeletonPreview || '// Select any function on the left to test lossless MCP vicem_rehydrate';
+
+      bodyEl.innerHTML =
+        '<div class="wb-grid-2">' +
+          '<div class="wb-box">' +
+            '<div class="wb-box-title">Indexed AST Symbols in .vicem/ledger.json (Click to Rehydrate)</div>' +
+            symRowsHtml +
+          '</div>' +
+          '<div class="wb-box' + (justRehydratedFlash ? ' rehydrate-flash' : '') + '">' +
+            '<div class="wb-box-title">' + rightBoxTitle + '</div>' +
+            '<pre class="code-preview-pre">' + escapeHtml(rightBoxCode) + '</pre>' +
+          '</div>' +
+        '</div>';
+    } else if (activeWorkbenchTab === 'ledger') {
+      titleEl.textContent =
+        'Stage 3 · Disk Sync Status (.vicem/BATON.md & .vicem/ledger.json) + Rule File Mounts';
+      const rulesHtml = (state.ruleMountStatus || [])
+        .map(
+          (r) =>
+            '<button class="rule-chip' +
+            (r.mounted ? ' mounted' : '') +
+            '" onclick="toggleRuleMount(\\'' +
+            escapeHtml(r.rel) +
+            '\\')">' +
+            '<span>' +
+            (r.mounted ? '● Mounted:' : '○ Mount:') +
+            '</span>' +
+            '<strong>' +
+            escapeHtml(r.rel) +
+            '</strong>' +
+            '</button>'
+        )
+        .join('');
+
+      const diskInfo =
+        'BATON.md on disk: ' +
+        (sk.batonOnDisk ? sk.batonDiskBytes.toLocaleString() + ' bytes (' + sk.batonDiskAgo + ')' : 'Not written yet (Click Sync Diet)') +
+        ' | ledger.json on disk: ' +
+        (sk.ledgerOnDisk ? sk.ledgerDiskBytes.toLocaleString() + ' bytes (' + sk.diskSymbolsCount + ' symbols)' : 'Not written yet');
+
+      bodyEl.innerHTML =
+        '<div class="wb-grid-2">' +
+          '<div class="wb-box">' +
+            '<div class="wb-box-title">' + escapeHtml(diskInfo) + '</div>' +
+            '<div class="wb-box-title" style="margin-top:6px">1-Click Agent Rule Mounts in ' + escapeHtml(state.shortProject) + '</div>' +
+            '<div class="rule-chip-list">' + rulesHtml + '</div>' +
+          '</div>' +
+          '<div class="wb-box">' +
+            '<div class="wb-box-title">Live .vicem/BATON.md Payload Preview (' + state.stats.dietTokens.toLocaleString() + ' tokens)</div>' +
+            '<pre class="code-preview-pre">' + escapeHtml(state.batonMarkdown || '') + '</pre>' +
+          '</div>' +
+        '</div>';
+    } else if (activeWorkbenchTab === 'receipt') {
+      const r = state.lastHandoffReceipt;
+      titleEl.textContent = r
+        ? 'Stage 4 · Verified 5-Step Handoff Receipt (' + r.timestamp + ' · ' + r.sourceAgent + ' -> ' + r.targetId + ')'
+        : 'Stage 4 · 5-Step Handoff Verification Pipeline (Ready to Relay)';
+      const steps = r
+        ? r.steps
+        : [
+            { ok: true, title: '1. Harvest Session & Git State', detail: 'Ready to extract ' + (selectedSess?.prompts?.length || 0) + ' prompts from ' + state.workingAgentId },
+            { ok: true, title: '2. Skeletonize AST & 4-Stage Diet', detail: state.stats.rawTokens.toLocaleString() + ' -> ' + state.stats.dietTokens.toLocaleString() + ' tok (-' + state.stats.savedPct + '%)' },
+            { ok: sk.batonOnDisk, title: '3. Persist .vicem/BATON.md & ledger.json', detail: sk.batonOnDisk ? 'Synced on disk (' + sk.batonDiskBytes + ' bytes)' : 'Will write on handoff or Sync Diet' },
+            { ok: (state.mountedFiles || []).length > 0, title: '4. Mount Target Rules & Clipboard', detail: (state.mountedFiles || []).length > 0 ? 'Mounted: ' + state.mountedFiles.join(', ') : 'Mounts target agent rule file + clipboard' },
+            { ok: true, title: '5. Launch Target Agent', detail: 'Click Hand off -> on any row below (' + launchMode.toUpperCase() + ' mode)' },
+          ];
+      bodyEl.innerHTML =
+        '<div class="wb-box">' +
+        steps
+          .map(
+            (s) =>
+              '<div class="prompt-list-item" style="display:flex;justify-content:space-between;gap:12px">' +
+              '<span><strong style="color:' + (s.ok ? 'var(--accent)' : 'var(--warn)') + '">' + (s.ok ? '[OK]' : '[WAIT]') + '</strong> ' + escapeHtml(s.title) + '</span>' +
+              '<span style="color:var(--text-muted)">' + escapeHtml(s.detail) + '</span>' +
+              '</div>'
+          )
+          .join('') +
+        '</div>';
+    }
   }
 
   function render() {
     if (!state) return;
 
-    // 1. Workspace Tabs
+    // 1. Project Tabs + Discovered Workspaces List in Popover
     const tabsEl = document.getElementById('ws-tabs');
     tabsEl.innerHTML = '';
-    for (const ws of state.workspaces.slice(0, 4)) {
+    for (const ws of (state.workspaces || []).slice(0, 5)) {
       const btn = document.createElement('button');
-      btn.className = 'ws-tab' + (ws.path === state.projectRoot ? ' active' : '');
-      btn.title = ws.shortPath;
+      const isCurrent = ws.path === state.projectRoot;
+      btn.className = 'ws-tab' + (isCurrent ? ' active' : '');
+      btn.title = ws.shortPath + ' (' + (ws.branch || 'main') + ')';
       btn.onclick = () => switchWorkspace(ws.path);
-      btn.innerHTML = \`<span>\${ws.name}</span>\`;
+      btn.innerHTML =
+        '<span class="ws-sync-dot' + (ws.hasBaton ? ' synced' : '') + '"></span>' +
+        '<span>' + escapeHtml(ws.name) + '</span>' +
+        '<span class="ws-branch-mini">' + escapeHtml(ws.branch || 'main') + '</span>';
       tabsEl.appendChild(btn);
     }
 
-    document.getElementById('branch-badge').textContent =
-      \`\${state.project} (\${state.branch})\`;
-
-    document.getElementById('mounted-status').textContent =
-      state.mountedFiles.length > 0
-        ? \`Mounted: \${state.mountedFiles.join(', ')}\`
-        : 'Live telemetry';
-
-    const workingNode = state.nodes.find(n => n.status === 'Working') || state.nodes[0];
-    document.getElementById('relay-source').textContent = workingNode.name;
-    if (!document.getElementById('relay-target').classList.contains('active-route')) {
-      document.getElementById('relay-target').textContent = 'Select target';
+    const popList = document.getElementById('ws-pop-list');
+    if (popList) {
+      popList.innerHTML = (state.workspaces || [])
+        .map(
+          (ws) =>
+            '<button class="ws-pop-item" onclick="switchWorkspace(\\'' +
+            escapeHtml(ws.path) +
+            '\\')">' +
+            '<span><strong>' +
+            escapeHtml(ws.name) +
+            '</strong> <span style="color:var(--text-muted)">(' +
+            escapeHtml(ws.shortPath) +
+            ')</span></span>' +
+            '<span style="color:var(--accent)">' +
+            escapeHtml(ws.branch || 'main') +
+            (ws.hasBaton ? ' · Synced' : '') +
+            '</span>' +
+            '</button>'
+        )
+        .join('');
     }
 
+    // 2. Kinetic Rolling Token & AST Telemetry
+    const sk = state.skeletonSummary || { totalSymbols: 0, batonOnDisk: false };
+    animateTelemetryNumbers(
+      state.stats.rawTokens,
+      state.stats.dietTokens,
+      state.stats.savedPct,
+      sk.totalSymbols || 0
+    );
+
+    // 3. Project Sessions Strip (Explicit Source Selector with Staggered Cascade)
+    document.getElementById('active-project-pill').textContent =
+      state.shortProject + ' (' + state.branch + ')';
+    document.getElementById('mounted-status').textContent =
+      state.mountedFiles.length > 0
+        ? 'Mounted: ' + state.mountedFiles.join(', ')
+        : 'Clean tree (no rules mounted)';
+
+    const sCardsEl = document.getElementById('session-cards');
+    sCardsEl.innerHTML = (state.projectSessions || [])
+      .map(
+        (s, idx) =>
+          '<button class="session-card' +
+          (s.isSelected ? ' selected' : '') +
+          '" style="--idx:' + idx + '" onclick="selectSourceSession(\\'' +
+          escapeHtml(s.agentId) +
+          '\\', \\'' +
+          escapeHtml(s.id) +
+          '\\')">' +
+          '<div class="sc-top">' +
+          '<span class="sc-agent">' +
+          (s.isSelected ? '<span class="sc-source-tag">SOURCE</span>' : '') +
+          escapeHtml(s.agentName) +
+          '</span>' +
+          '<span class="sc-ago">' +
+          escapeHtml(s.ago) +
+          ' · ' +
+          (s.prompts?.length || 0) +
+          ' prompts</span>' +
+          '</div>' +
+          '<div class="sc-title">' +
+          escapeHtml(s.title) +
+          '</div>' +
+          '</button>'
+      )
+      .join('');
+
+    const workingNode = state.nodes.find((n) => n.isSource) || state.nodes[0];
+    document.getElementById('relay-source').textContent = workingNode ? workingNode.name : state.workingAgentId;
     if (!isEditingGoal) {
       taskInput.value = state.taskTitle;
     }
 
-    animateTokenStats(state.stats.rawTokens, state.stats.dietTokens, state.stats.savedPct);
-    document.getElementById('stat-secrets').textContent =
-      \`\${state.stats.secretsMasked} masked\`;
+    // 4. Live 4-Node Pipeline Stepper Summary
+    const selectedSess = (state.projectSessions || []).find((s) => s.isSelected) || (state.projectSessions || [])[0];
+    document.getElementById('pipe-badge-1').textContent = (selectedSess?.prompts?.length || 0) + ' prompts';
+    document.getElementById('pipe-sub-1').textContent =
+      (selectedSess?.agentName || 'Session') + ' · ' + (state.modifiedFiles?.length || 0) + ' tracked files';
 
-    // Render Live 5-Step Handoff Verification Receipt Panel if present
-    const receiptPanel = document.getElementById('receipt-panel');
-    if (state.lastHandoffReceipt && !receiptDismissed) {
-      const r = state.lastHandoffReceipt;
-      const isNewReceipt = lastRenderedReceiptTs !== r.timestamp;
-      lastRenderedReceiptTs = r.timestamp;
-      receiptPanel.classList.add('visible');
-      document.getElementById('receipt-title').textContent =
-        \`✓ Handoff Verified (\${r.timestamp}) — \${r.sourceAgent} → \${r.targetId} (\${r.project})\`;
-      if (isNewReceipt || !document.getElementById('receipt-steps').children.length) {
-        document.getElementById('receipt-steps').innerHTML = r.steps
-          .map(
-            (s, idx) => \`<div class="step-row\${isNewReceipt ? ' step-cascade' : ''}" style="--step-idx:\${idx}">
-              <span class="step-name"><span class="step-ok">\${s.ok ? '[✓]' : '[!]'}</span> \${s.title}</span>
-              <span class="step-detail">\${s.detail}</span>
-            </div>\`
-          )
-          .join('');
-      }
-      document.getElementById('baton-preview-box').textContent = r.batonPreview || '';
+    document.getElementById('pipe-badge-2').textContent = sk.totalSymbols + ' symbols';
+    document.getElementById('pipe-sub-2').textContent =
+      state.stats.rawTokens.toLocaleString() + ' -> ' + state.stats.dietTokens.toLocaleString() + ' tok (-' + state.stats.savedPct + '%)';
+
+    const b3 = document.getElementById('pipe-badge-3');
+    b3.textContent = sk.batonOnDisk ? 'Disk Synced' : 'In-Memory';
+    b3.className = 'pipe-badge ' + (sk.batonOnDisk ? 'ok' : 'warn');
+    document.getElementById('pipe-sub-3').textContent = sk.batonOnDisk
+      ? 'BATON.md (' + sk.batonDiskBytes + 'B) · ' + (state.mountedFiles.length || 0) + ' mounted'
+      : 'Click Sync Diet (R) to write to disk';
+
+    const b4 = document.getElementById('pipe-badge-4');
+    if (state.lastHandoffReceipt) {
+      b4.textContent = 'Verified';
+      b4.className = 'pipe-badge ok';
+      document.getElementById('pipe-sub-4').textContent =
+        state.lastHandoffReceipt.sourceAgent + ' -> ' + state.lastHandoffReceipt.targetId + ' (' + state.lastHandoffReceipt.timestamp + ')';
     } else {
-      receiptPanel.classList.remove('visible');
+      b4.textContent = 'Ready';
+      b4.className = 'pipe-badge';
+      document.getElementById('pipe-sub-4').textContent = 'Route: ' + (workingNode?.name || 'Source') + ' -> Target';
     }
 
-    // Inspector Drawer
-    document.getElementById('insp-files').innerHTML = (state.modifiedFiles || [])
-      .map(f => \`<span class="insp-tag">\${f}</span>\`)
-      .join('');
-    document.getElementById('insp-mounts').innerHTML = state.mountedFiles.length > 0
-      ? state.mountedFiles.map(m => \`<span class="insp-tag">\${m}</span>\`).join('') +
-        \`<button class="cmd-btn" style="height:22px" onclick="unmountRules()">Unmount all</button>\`
-      : '<span style="color:var(--text-muted)">None (clean working tree)</span>';
+    renderWorkbench();
 
-    // Agent Process Rows — Keyed Non-Destructive DOM Update (preserves hover & transitions)
+    // 5. Agent Process Rows (Scoped to Project + Explicit Set Source / Hand Off)
     const tbody = document.getElementById('agent-rows');
-    const visibleNodes = showAllPlatforms
-      ? state.nodes
-      : state.nodes.filter(n => n.primary || n.installed);
-
-    const existingRows = new Map();
-    Array.from(tbody.querySelectorAll('tr[data-agent-id]')).forEach(tr => {
-      existingRows.set(tr.dataset.agentId, tr);
+    const visibleNodes = state.nodes.filter((n) => {
+      if (agentFilter === 'project') return n.inProject || n.isSource;
+      if (agentFilter === 'all') return true;
+      return n.primary || n.installed || n.inProject;
     });
 
-    const visibleIds = new Set(visibleNodes.map(n => n.id));
-    for (const [id, tr] of existingRows.entries()) {
-      if (!visibleIds.has(id)) tr.remove();
-    }
+    const inProjCount = state.nodes.filter((n) => n.inProject).length;
+    document.getElementById('filter-project').textContent = 'In This Project (' + inProjCount + ')';
+    document.getElementById('table-scope-hint').textContent =
+      inProjCount + ' agents have session history in ' + state.project + ' (' + state.branch + ')';
 
-    visibleNodes.forEach((node, idx) => {
-      const isWorking = node.status === 'Working';
-      const hasBar = Boolean(node.quota?.hasBar);
-      const pct = node.quota?.remainPct ?? 100;
-      const isWarn = hasBar && pct < 55;
-      const isRelayingThis = relayingTargetId === node.id;
+    tbody.innerHTML = visibleNodes
+      .map((node) => {
+        const isSource = Boolean(node.isSource);
+        const hasBar = Boolean(node.quota?.hasBar);
+        const pct = node.quota?.remainPct ?? 100;
+        const isWarn = hasBar && pct < 55;
+        const isRelayingThis = relayingTargetId === node.id;
 
-      const actionHtml = isWorking
-        ? \`<span class="holding-pill">● Holding</span>\`
-        : isRelayingThis
-        ? \`<button class="handoff-btn is-relaying"><span>Relaying</span><span class="arr">···</span></button>\`
-        : \`<button class="handoff-btn" onmouseenter="previewRoute('\${node.name}', '\${node.id}')" onmouseleave="previewRoute(null, null)" onclick="handOffTo('\${node.id}', '\${node.name}')"><span>Hand off</span><span class="arr">→</span></button>\`;
+        const actionHtml = isSource
+          ? '<span class="holding-pill">● SOURCE BATON</span>'
+          : isRelayingThis
+          ? '<button class="handoff-btn"><span>Relaying...</span></button>'
+          : '<div class="act-group">' +
+              '<button class="set-src-btn" onclick="selectSourceSession(\\'' +
+              escapeHtml(node.id) +
+              '\\', ' +
+              (node.projectSessionId ? '\\'' + escapeHtml(node.projectSessionId) + '\\'' : 'null') +
+              ')" title="Use this agent as the Baton Source">Set Source</button>' +
+              '<button class="handoff-btn" onmouseenter="previewRoute(\\'' +
+              escapeHtml(node.name) +
+              '\\')" onmouseleave="previewRoute(null)" onclick="handOffTo(\\'' +
+              escapeHtml(node.id) +
+              '\\', \\'' +
+              escapeHtml(node.name) +
+              '\\')"><span>Hand off</span><span>-&gt;</span></button>' +
+            '</div>';
 
-      const rowInnerHtml = \`
-        <td>
-          <div class="agent-cell">
-            <div class="agent-info">
-              <div class="agent-title-row">
-                <span class="agent-name">\${node.name}</span>
-                <span class="model-badge">\${node.model}</span>
-              </div>
-              <span class="agent-path">\${node.workspace}</span>
-            </div>
-          </div>
-        </td>
-        <td class="td-state">
-          <span class="state-badge \${node.status}">
-            <span class="state-sq \${node.status}"></span>
-            <span>\${node.status}</span>
-          </span>
-        </td>
-        <td>
-          <div class="quota-cell">
-            <div class="quota-meta">
-              <span class="quota-val\${hasBar ? '' : ' subtle'}">\${node.quota?.label || 'Ready'}</span>
-              <span class="quota-sub">\${node.quota?.detail || ''}</span>
-            </div>
-            \${buildSegmentedBar(pct, isWorking, isWarn, hasBar)}
-          </div>
-        </td>
-        <td class="seen-cell">\${node.lastSeen}</td>
-        <td>\${actionHtml}</td>
-      \`;
+        const subLine = node.inProject
+          ? (node.lastPrompt ? 'Session: "' + node.lastPrompt + '"' : 'Active in ' + state.shortProject)
+          : 'Global: ' + node.globalWorkspace;
 
-      let tr = existingRows.get(node.id);
-      const rowSig = \`\${node.status}|\${node.model}|\${node.workspace}|\${node.quota?.label}|\${node.quota?.detail}|\${pct}|\${node.lastSeen}|\${isRelayingThis}\`;
-      if (!tr) {
-        tr = document.createElement('tr');
-        tr.dataset.agentId = node.id;
-        tr.dataset.sig = rowSig;
-        tr.style.setProperty('--row-idx', String(idx));
-        tr.className = (isWorking ? 'is-working ' : '') + 'row-enter';
-        tr.innerHTML = rowInnerHtml;
-        tbody.appendChild(tr);
-        setTimeout(() => tr.classList.remove('row-enter'), 550);
-      } else {
-        tr.classList.toggle('is-working', isWorking);
-        if (tr.dataset.sig !== rowSig) {
-          tr.dataset.sig = rowSig;
-          tr.innerHTML = rowInnerHtml;
-        }
-        tbody.appendChild(tr);
-      }
-    });
+        return (
+          '<tr class="' + (isSource ? 'is-working' : '') + '" data-agent-id="' + escapeHtml(node.id) + '">' +
+            '<td>' +
+              '<div class="agent-cell">' +
+                '<div class="agent-info">' +
+                  '<div class="agent-title-row">' +
+                    '<span class="agent-name">' + escapeHtml(node.name) + '</span>' +
+                    (node.inProject ? '<span class="in-proj-badge">IN PROJECT</span>' : '') +
+                    (node.model ? '<span class="model-badge">' + escapeHtml(node.model) + '</span>' : '') +
+                  '</div>' +
+                  '<span class="agent-path">' + escapeHtml(subLine) + '</span>' +
+                '</div>' +
+              '</div>' +
+            '</td>' +
+            '<td class="td-state">' +
+              '<span class="state-badge">' +
+                '<span class="state-sq ' + escapeHtml(node.status) + '"></span>' +
+                '<span>' + (isSource ? 'Source' : node.inProject ? 'Ready' : node.status) + '</span>' +
+              '</span>' +
+            '</td>' +
+            '<td>' +
+              '<div class="quota-cell">' +
+                '<div class="quota-meta">' +
+                  '<span class="quota-val' + (hasBar ? '' : ' subtle') + '">' + escapeHtml(node.quota?.label || 'Ready') + '</span>' +
+                  '<span class="quota-sub">' + escapeHtml(node.quota?.detail || '') + '</span>' +
+                '</div>' +
+                buildSegmentedBar(pct, isSource, isWarn, hasBar) +
+              '</div>' +
+            '</td>' +
+            '<td class="seen-cell">' + escapeHtml(node.lastSeen) + '</td>' +
+            '<td>' + actionHtml + '</td>' +
+          '</tr>'
+        );
+      })
+      .join('');
+
+    requestAnimationFrame(positionGliders);
   }
 
   async function handOffTo(targetId, targetName) {
-    receiptDismissed = false;
     relayingTargetId = targetId;
-    previewRoute(targetName, targetId);
-    const graph = document.querySelector('.relay-graph');
-    if (graph) graph.classList.add('relaying-surge');
+    previewRoute(targetName);
+    triggerPipelineWave();
     render();
-    setStatus(\`Executing 5-step handoff to \${targetName}...\`);
+    setStatus('Executing 5-step handoff to ' + targetName + '...');
     try {
       const res = await fetch('/api/handoff', {
         method: 'POST',
@@ -3209,38 +4458,14 @@ const HTML_PAGE = `<!DOCTYPE html>
         body: JSON.stringify({ targetId, launchMode }),
       });
       state = await res.json();
+      workbenchOpen = true;
+      activeWorkbenchTab = 'receipt';
     } finally {
       relayingTargetId = null;
-      if (graph) graph.classList.remove('relaying-surge');
     }
     render();
-    const targetRow = document.querySelector(\`#agent-rows tr[data-agent-id="\${targetId}"]\`);
-    if (targetRow) {
-      targetRow.classList.remove('just-relayed');
-      void targetRow.offsetWidth;
-      targetRow.classList.add('just-relayed');
-    }
-    setStatus(state.actionReceipt || \`Relayed baton to \${targetName}\`);
-  }
-
-  async function unmountRules() {
-    const res = await fetch('/api/unmount', { method: 'POST' });
-    state = await res.json();
-    render();
-    setStatus('Unmounted temporary rule files');
-  }
-
-  async function triggerSelfDiet() {
-    receiptDismissed = false;
-    setStatus('Compacting active session...');
-    const res = await fetch('/api/handoff', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetId: state?.workingAgentId || 'antigravity', launchMode: 'off' }),
-    });
-    state = await res.json();
-    render();
-    setStatus(\`Compacted active session (-\${state?.stats?.savedPct || 94.2}%) & copied to clipboard\`);
+    popActionToast('✓ Baton Relayed -> ' + targetName);
+    setStatus(state.actionReceipt || 'Relayed baton to ' + targetName);
   }
 
   async function triggerBack() {
@@ -3248,24 +4473,32 @@ const HTML_PAGE = `<!DOCTYPE html>
       setStatus('No previous agent in session history');
       return;
     }
-    const prev = state.nodes.find(n => n.id === state.lastHandedOffFrom);
+    const prev = state.nodes.find((n) => n.id === state.lastHandedOffFrom);
     await handOffTo(state.lastHandedOffFrom, prev ? prev.name : state.lastHandedOffFrom);
   }
 
   async function copyBaton() {
-    await fetch('/api/clip', { method: 'POST' });
-    setStatus('Copied .vicem/BATON.md to macOS clipboard');
+    const res = await fetch('/api/clip', { method: 'POST' });
+    state = await res.json();
+    render();
+    popActionToast('✓ Copied .vicem/BATON.md');
+    setStatus('Copied .vicem/BATON.md to system clipboard');
   }
 
+  // Keyboard shortcuts (Emil Kowalski rule: zero animation on high-frequency keyboard actions)
   window.addEventListener('keydown', (e) => {
-    if (isEditingGoal || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (isEditingGoal || e.target.tagName === 'INPUT' || e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key.toLowerCase();
-    if (k === 'r') { flashKeybindButton('button[onclick="triggerSelfDiet()"]'); triggerSelfDiet(); }
-    else if (k === 'z') { flashKeybindButton('button[onclick="triggerBack()"]'); triggerBack(); }
-    else if (k === 'c') { flashKeybindButton('button[onclick="copyBaton()"]'); copyBaton(); }
-    else if (k === 'i') { flashKeybindButton('#btn-inspect'); toggleInspector(); }
-    else if (k === 'a') { flashKeybindButton('#btn-all-platforms'); toggleAllPlatforms(); }
-    else if (k === 't') { flashKeybindButton('.theme-btn'); toggleTheme(); }
+    if (k === 'r') syncDietToDisk();
+    else if (k === 'z') triggerBack();
+    else if (k === 'c') copyBaton();
+    else if (k === 'i') toggleWorkbenchDrawer();
+    else if (k === 'a') setAgentFilter(agentFilter === 'all' ? 'installed' : 'all');
+    else if (k === 't') toggleTheme();
+    else if (k === '1') selectWorkbenchTab('harvest');
+    else if (k === '2') selectWorkbenchTab('skeleton');
+    else if (k === '3') selectWorkbenchTab('ledger');
+    else if (k === '4') selectWorkbenchTab('receipt');
   });
 
   async function load(initialData) {
@@ -3275,39 +4508,13 @@ const HTML_PAGE = `<!DOCTYPE html>
         window.location.reload();
         return;
       }
-      if (isDemoMode) {
-        const origProject = nextState.project;
-        const origShort = nextState.shortProject;
-        nextState.project = 'vicem';
-        nextState.branch = 'main';
-        nextState.workspaces = [
-          { name: 'vicem', path: nextState.projectRoot, shortPath: '~/workspace/vicem' },
-          { name: 'core-sdk', path: '/ws/core-sdk', shortPath: '~/workspace/core-sdk' },
-          { name: 'api-gateway', path: '/ws/api-gateway', shortPath: '~/workspace/api-gateway' },
-          { name: 'web-studio', path: '/ws/web-studio', shortPath: '~/workspace/web-studio' },
-        ];
-        nextState.nodes = (nextState.nodes || []).map(n => ({
-          ...n,
-          workspace: n.workspace.startsWith('~/') ? '~/workspace/vicem' : n.workspace,
-        }));
-        if (nextState.lastHandoffReceipt) {
-          nextState.lastHandoffReceipt.project = 'vicem';
-          nextState.lastHandoffReceipt.steps = nextState.lastHandoffReceipt.steps.map(s => ({
-            ...s,
-            detail: s.detail
-              .replaceAll(origShort, '~/workspace/vicem')
-              .replaceAll(origProject, 'vicem')
-              .replaceAll('(master)', '(main)'),
-          }));
-        }
-      }
       state = nextState;
       render();
     } catch {}
   }
 
   load(window.__INITIAL_STATE__ || null);
-  if (!isStaticMode) setInterval(() => load(null), 3000);
+  if (!isStaticMode) setInterval(() => load(null), 3500);
 </script>
 </body>
 </html>`;
@@ -3319,10 +4526,13 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === '/') {
     const initData = await collectState();
-    const safeJson = JSON.stringify(initData).replace(/</g, '\\u003c');
+    const safeJson = JSON.stringify(initData)
+      .replace(/</g, '\\u003c')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
     const hydratedHtml = HTML_PAGE.replace(
       '<script>',
-      `<script>window.__INITIAL_STATE__ = ${safeJson};\n`
+      () => `<script>window.__INITIAL_STATE__ = ${safeJson};\n`
     );
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(hydratedHtml);
@@ -3356,7 +4566,196 @@ const server = http.createServer(async (req, res) => {
         const { projectRoot } = JSON.parse(body || '{}');
         if (projectRoot && fs.existsSync(projectRoot)) {
           selectedProjectRoot = projectRoot;
+          selectedSourceSessionId = null;
+          manualActiveAgent = null;
           customGoalOverride = '';
+        }
+        const updated = await collectState();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(updated));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(e) }));
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/add-workspace' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', async () => {
+      try {
+        const { rawPath } = JSON.parse(body || '{}');
+        const home = os.homedir();
+        let cleaned = String(rawPath || '').trim();
+        if (cleaned.startsWith('~/')) {
+          cleaned = path.join(home, cleaned.slice(2));
+        } else if (cleaned === '~') {
+          cleaned = home;
+        }
+        cleaned = path.resolve(cleaned);
+        if (!cleaned || !fs.existsSync(cleaned) || !fs.statSync(cleaned).isDirectory()) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: `Directory not found: ${rawPath}` }));
+          return;
+        }
+        customWorkspacePaths.add(cleaned);
+        selectedProjectRoot = cleaned;
+        selectedSourceSessionId = null;
+        manualActiveAgent = null;
+        customGoalOverride = '';
+        const updated = await collectState();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(updated));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(e) }));
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/source' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', async () => {
+      try {
+        const { agentId, sessionId } = JSON.parse(body || '{}');
+        if (agentId) manualActiveAgent = String(agentId);
+        if (sessionId !== undefined) selectedSourceSessionId = sessionId ? String(sessionId) : null;
+        customGoalOverride = '';
+        const updated = await collectState();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(updated));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(e) }));
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/sync-diet' && req.method === 'POST') {
+    try {
+      const home = os.homedir();
+      const state = await collectState();
+      const projectRoot = state.projectRoot;
+      const sourceAgent = state.workingAgentId || 'antigravity';
+      const git = GitCollector.collect(projectRoot);
+      const rich = harvestRichProjectContext(projectRoot, home, git);
+      const effectiveGit = {
+        ...git,
+        modifiedFiles: rich.activeFileList.length > 0 ? rich.activeFileList : git.modifiedFiles,
+      };
+      const doneList = [];
+      for (const u of rich.recentUsers.slice(0, -1)) doneList.push(`User request handled: "${u}"`);
+      for (const a of rich.recentAssistant) doneList.push(`Agent summary: ${a}`);
+      for (const f of rich.activeFileList) doneList.push(`Active file modified/created in session: \`${f}\``);
+      const task = {
+        goal: state.taskTitle,
+        immediateNext: [
+          `Fulfill latest request in ${state.project} (${state.branch}): "${state.taskTitle}"`,
+        ],
+        done: doneList,
+        userPrompts: rich.recentUsers,
+      };
+      const baton = BatonIaBuilder.build({
+        projectRoot,
+        sourceAgent,
+        targetAgent: 'codex',
+        sessionId: rich.sessionId,
+        persist: true,
+        taskContext: task,
+        gitContext: effectiveGit,
+        budgetTokens: 4000,
+      });
+      const skelSaved = collectLiveSkeletonLedger(projectRoot, rich.activeFileList, true);
+      ClipboardAdapter.copyNative(baton.markdown);
+      const updated = await collectState();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(
+        JSON.stringify({
+          ...updated,
+          actionReceipt: `Synced .vicem/BATON.md (${updated.skeletonSummary.batonDiskBytes}B) & .vicem/ledger.json (${skelSaved.totalSymbols} AST symbols)`,
+        })
+      );
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(e) }));
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/rehydrate' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', async () => {
+      try {
+        const { filePath, symbolName } = JSON.parse(body || '{}');
+        const projectRoot = fs.existsSync(selectedProjectRoot) ? selectedProjectRoot : DEFAULT_PROJECT_ROOT;
+        const git = GitCollector.collect(projectRoot);
+        const rich = harvestRichProjectContext(projectRoot, os.homedir(), git);
+        const skel = collectLiveSkeletonLedger(projectRoot, rich.activeFileList, false);
+        const diskLedger = DietLedger.load(projectRoot);
+        const code =
+          diskLedger.getEntry(String(filePath || ''), symbolName ? String(symbolName) : null) ||
+          skel.liveLedger.getEntry(String(filePath || ''), symbolName ? String(symbolName) : null) ||
+          '// Symbol not found in ledger';
+        let driftBanner = '';
+        try {
+          const drift = StalenessDriftGuard.check(projectRoot);
+          if (drift.drifted) {
+            driftBanner = `// [STALENESS DRIFT WARNING]: Branch/commits changed since Baton snapshot (${drift.driftedFiles.join(', ')})\n`;
+          }
+        } catch {}
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            filePath,
+            symbolName,
+            rehydratedCode: driftBanner + code,
+          })
+        );
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(e) }));
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/toggle-rule' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', async () => {
+      try {
+        const { relPath } = JSON.parse(body || '{}');
+        const state = await collectState();
+        const projectRoot = state.projectRoot;
+        const fp = path.join(projectRoot, String(relPath || 'AGENTS.md'));
+        const isMounted =
+          fs.existsSync(fp) && fs.readFileSync(fp, 'utf8').includes('<!-- VICEM-BATON-START -->');
+        if (isMounted) {
+          const cur = fs.readFileSync(fp, 'utf8');
+          const stripped = cur
+            .replace(/<!-- VICEM-BATON-START -->[\s\S]*?<!-- VICEM-BATON-END -->\n?/g, '')
+            .trim();
+          if (stripped) {
+            fs.writeFileSync(fp, stripped + '\n', 'utf8');
+          } else {
+            fs.rmSync(fp, { force: true });
+          }
+        } else {
+          fs.mkdirSync(path.dirname(fp), { recursive: true });
+          const block = `<!-- VICEM-BATON-START -->\n${state.batonMarkdown.trim()}\n<!-- VICEM-BATON-END -->\n`;
+          if (fs.existsSync(fp)) {
+            const cur = fs.readFileSync(fp, 'utf8');
+            fs.writeFileSync(fp, block + '\n' + cur, 'utf8');
+          } else {
+            fs.writeFileSync(fp, block, 'utf8');
+          }
         }
         const updated = await collectState();
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -3408,7 +4807,6 @@ const server = http.createServer(async (req, res) => {
     try {
       RuleMountAdapter.unmount(selectedProjectRoot);
       lastHandoffReceipt = null;
-      lastHandedOffTo = null;
       const updated = await collectState();
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(updated));
@@ -3421,8 +4819,9 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === '/api/clip' && req.method === 'POST') {
     await VicemApp.run(['clip'], { projectRoot: selectedProjectRoot, skipLaunch: true });
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    const updated = await collectState();
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(updated));
     return;
   }
 
