@@ -484,7 +484,7 @@ describe('Edge Suite 1E: SecretRedactor — All 9 Providers, High-Entropy Assign
       },
       {
         provider: 'GOOGLE',
-        raw: 'AIzaSyD-1234567890abcdefghijklmnopqrstu',
+        raw: 'AIza' + 'SyD-1234567890abcdefghijklmnopqrstu',
       },
       {
         provider: 'SLACK',

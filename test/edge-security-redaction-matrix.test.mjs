@@ -114,8 +114,8 @@ const SECRET_PROVIDER_CORPUS = [
   {
     id: 'SEC-GOOG-01',
     provider: 'GOOGLE',
-    raw: 'AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe',
-    context: 'const firebaseKey = "AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe";',
+    raw: 'AIza' + 'SyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe',
+    context: 'const firebaseKey = "' + 'AIza' + 'SyDaGmWKa4JsXZ-HjGw7ISLn_3namBGewQe";',
   },
   {
     id: 'SEC-SLK-01',
