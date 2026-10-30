@@ -189,3 +189,10 @@ Validation: automated unit/integration tests and local macOS browser checks. Win
 
 
 See [compatibility verification](docs/COMPATIBILITY.md) for tested operating systems, actual agent read proofs, and limitations.
+
+
+### Automatic launch and manual continuation
+
+Windows CLI/package behavior is verified in native CI on Node 22 and 24. Windows desktop integration remains Preview; desktop auto-launch on every OS is best effort. [View the passing CI run](https://github.com/RAKKUNN/vicem/actions/runs/41040234570) and [the precise support scope](docs/COMPATIBILITY.md).
+
+If automatic launch fails, the handoff stays saved. The GUI provides **Copy command**, **Copy start prompt**, and the saved file path. Open the destination manually, select your project, and paste the start prompt. CLI failures provide the same guide. Successful delivery does not confirm that an agent read it.
