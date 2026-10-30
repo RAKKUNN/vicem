@@ -12,7 +12,7 @@
   <a href="https://glama.ai/mcp/servers/RAKKUNN/vicem"><img src="https://glama.ai/mcp/servers/RAKKUNN/vicem/badges/score.svg" alt="Vicem MCP server rated A on Glama" /></a>
   <a href="https://mcpservers.org/servers/rakkunn/vicem"><img src="https://mcpservers.org/badge.svg" alt="Listed on mcpservers.org" /></a>
   <a href="https://www.npmjs.com/package/vicem-cli"><img src="https://img.shields.io/npm/v/vicem-cli?color=CB3837&label=npm%20(vicem-cli)" alt="npm vicem-cli" /></a>
-  <a href="https://github.com/RAKKUNN/vicem/releases/tag/v1.1.2"><img src="https://img.shields.io/badge/release-v1.1.2%20(Kinetic%20GUI)-10B981" alt="Release v1.1.2" /></a>
+  <a href="https://github.com/RAKKUNN/vicem/releases/tag/v1.1.3"><img src="https://img.shields.io/badge/release-v1.1.3%20(Kinetic%20GUI)-10B981" alt="Release v1.1.3" /></a>
   <img src="https://img.shields.io/badge/dependencies-0-3B82F6" alt="Zero Dependencies" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-F59E0B" alt="MIT License" /></a>
 </p>
