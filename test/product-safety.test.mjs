@@ -91,6 +91,8 @@ test('manual continuation quotes Windows and POSIX paths and does not claim rece
  const web=HandoffService.manualGuide('/tmp/project','web','linux');
  assert.equal(web.command,"cd '/tmp/project'");
  assert.match(web.instructions,/manually/);
+ assert.match(web.instructions,/attach or paste/);
+ assert.match(web.prompt,/I attach or paste/);
 });
 
 
