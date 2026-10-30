@@ -3916,7 +3916,7 @@ export class HandoffService {
   static manualGuide(projectRoot, targetAgent, platform = process.platform) {
     const windows = platform === 'win32';
     const quote = value => windows ? "'" + String(value).replaceAll("'", "''") + "'" : "'" + String(value).replaceAll("'", "'\"'\"'") + "'";
-    const prompt = `Read .vicem/BATON.md in ${projectRoot}. Continue from Section 2 (Immediate NEXT), and report any missing context before making changes.`;
+    const prompt = targetAgent === 'web' ? 'Use the BATON.md I attach or paste in this conversation. Continue from Section 2 (Immediate NEXT), and report any missing context before making changes.' : `Read .vicem/BATON.md in ${projectRoot}. Continue from Section 2 (Immediate NEXT), and report any missing context before making changes.`;
     const commands = {codex:'codex', claude:'claude', gemini:'gemini', aider:'aider', cursor:'cursor', vscode:'code', windsurf:'windsurf', antigravity:'agy'};
     const executable = commands[targetAgent];
     const folderCommand = windows ? `Set-Location -LiteralPath ${quote(projectRoot)} -ErrorAction Stop` : `cd ${quote(projectRoot)}`;
@@ -3926,7 +3926,7 @@ export class HandoffService {
       targetAgent, shell: windows ? 'PowerShell' : 'Terminal', projectRoot,
       batonPath: (windows ? path.win32 : path).join(projectRoot, '.vicem', 'BATON.md'),
       prompt, command: executable ? (windows ? `& { ${folderCommand}\n${executable} ${args}\n}` : `${folderCommand} && ${executable} ${args}`) : folderCommand,
-      instructions: executable ? 'Run the command if the destination is installed, or open it manually and paste the start prompt.' : 'Open your destination manually, select this project, and paste the start prompt.',
+      instructions: targetAgent === 'web' ? 'Open your web chat manually and attach or paste the saved BATON.md, then paste the start prompt. Web chats cannot read local files directly.' : executable ? 'Run the command if the destination is installed, or open it manually and paste the start prompt.' : 'Open your destination manually, select this project, and paste the start prompt.',
       receptionConfirmed: false,
     };
   }

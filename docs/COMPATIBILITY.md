@@ -48,3 +48,5 @@ The saved `.vicem/BATON.md` remains available. GUI results show **Your handoff i
 4. Check the destination conversation to confirm that it read the handoff.
 
 PowerShell commands quote literal paths, including spaces and apostrophes, and stop if the project folder cannot be selected. For destinations without a known CLI command, the guide explicitly tells users to open the destination manually.
+
+For Web Chat, attach or paste the saved BATON.md before sending the start prompt. Web chats cannot read local project files directly.
