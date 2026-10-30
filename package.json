@@ -21,7 +21,10 @@
     "AGENTS.snippet.md",
     "README.md",
     "SECURITY.md",
-    "SHA256SUMS"
+    "SHA256SUMS",
+    "docs/anatomy/",
+    "scripts/compat-smoke.mjs",
+    "docs/COMPATIBILITY.md"
   ],
   "homepage": "https://rakkunn.github.io/vicem/",
   "repository": {
@@ -30,11 +33,12 @@
   },
   "author": "Rakkunn",
   "scripts": {
-    "build": "node --check ./vicem.mjs",
+    "build": "node --check ./vicem.mjs && node --check ./vicem-gui.mjs",
     "start": "node ./vicem.mjs mcp-server",
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test --test-timeout=60000 test/*.test.mjs",
     "doctor": "node ./vicem.mjs doctor",
-    "guard": "node ./vicem.mjs guard"
+    "guard": "node ./vicem.mjs guard",
+    "test:compat": "node scripts/compat-smoke.mjs ."
   },
   "engines": {
     "node": ">=22.5.0"
