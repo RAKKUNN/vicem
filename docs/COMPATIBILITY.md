@@ -50,3 +50,10 @@ The saved `.vicem/BATON.md` remains available. GUI results show **Your handoff i
 PowerShell commands quote literal paths, including spaces and apostrophes, and stop if the project folder cannot be selected. For destinations without a known CLI command, the guide explicitly tells users to open the destination manually.
 
 For Web Chat, attach or paste the saved BATON.md before sending the start prompt. Web chats cannot read local project files directly.
+
+## Final merge review
+
+- CLI previews honor the explicit `--goal` value without writing project artifacts.
+- Removing or replacing handoff blocks preserves user notes between separate blocks and handles nested markers. Incomplete blocks are rejected without rewriting the file.
+- Rule-file removal rejects paths outside the selected project, including tampered backup entries.
+- Documentation and commit messages are maintained in English. Non-English test strings are intentional Unicode compatibility fixtures.
