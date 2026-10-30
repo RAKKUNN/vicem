@@ -4828,7 +4828,7 @@ export const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify(updated));
     } catch (e) {
       res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: e.message || String(e) }));
+      res.end(JSON.stringify({ error: typeof e?.message === 'string' ? e.message.split('\n')[0] : 'Request failed' }));
     }
     return;
   }
@@ -4864,7 +4864,7 @@ export const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify(updated));
     } catch (e) {
       res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: e.message || String(e) }));
+      res.end(JSON.stringify({ error: typeof e?.message === 'string' ? e.message.split('\n')[0] : 'Request failed' }));
     }
     return;
   }
@@ -4880,7 +4880,7 @@ export const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify(updated));
     } catch (e) {
       res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: e.message || String(e) }));
+      res.end(JSON.stringify({ error: typeof e?.message === 'string' ? e.message.split('\n')[0] : 'Request failed' }));
     }
     return;
   }
@@ -4931,7 +4931,7 @@ export const server = http.createServer(async (req, res) => {
       );
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: String(e) }));
+      res.end(JSON.stringify({ error: typeof e?.message === 'string' ? e.message.split('\n')[0] : 'Sync failed' }));
     }
     return;
   }
@@ -4970,7 +4970,7 @@ export const server = http.createServer(async (req, res) => {
       );
     } catch (e) {
       res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: e.message || String(e) }));
+      res.end(JSON.stringify({ error: typeof e?.message === 'string' ? e.message.split('\n')[0] : 'Request failed' }));
     }
     return;
   }
@@ -5025,7 +5025,7 @@ export const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify(updated));
     } catch (e) {
       res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: e.message || String(e) }));
+      res.end(JSON.stringify({ error: typeof e?.message === 'string' ? e.message.split('\n')[0] : 'Request failed' }));
     }
     return;
   }
@@ -5039,7 +5039,7 @@ export const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify(updated));
     } catch (e) {
       res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: e.message || String(e) }));
+      res.end(JSON.stringify({ error: typeof e?.message === 'string' ? e.message.split('\n')[0] : 'Request failed' }));
     }
     return;
   }
@@ -5068,7 +5068,7 @@ export const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify(updated));
     } catch (e) {
       res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: e.message || String(e) }));
+      res.end(JSON.stringify({ error: typeof e?.message === 'string' ? e.message.split('\n')[0] : 'Request failed' }));
     }
     return;
   }
@@ -5082,7 +5082,7 @@ export const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify(updated));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: String(e) }));
+      res.end(JSON.stringify({ error: typeof e?.message === 'string' ? e.message.split('\n')[0] : 'Unmount failed' }));
     }
     return;
   }
@@ -5095,7 +5095,7 @@ export const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify(updated));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: String(e) }));
+      res.end(JSON.stringify({ error: typeof e?.message === 'string' ? e.message.split('\n')[0] : 'Clip failed' }));
     }
     return;
   }

@@ -166,7 +166,7 @@ test('Phase 12.5 - CRIT-05 & CRIT-06: CodeSkeletonizer handles `return /a{1,2}/`
 
   // 2. CRIT-06: Browser `index.html` Python indentation skeletonization & standalone high-entropy secret redaction
   const html = fs.readFileSync(indexHtmlPath, 'utf8');
-  const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+  const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/i);
   assert.ok(scriptMatch);
 
   const pyCode = `def compute_heavy_embeddings(records):

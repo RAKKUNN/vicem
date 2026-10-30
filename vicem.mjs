@@ -1106,7 +1106,7 @@ export class CodeSkeletonizer {
   static findSignatureStartIdx(content, openBraceIdx, symbol) {
     const lookbackStart = Math.max(0, openBraceIdx - 600);
     const slice = content.slice(lookbackStart, openBraceIdx);
-    const symRegex = new RegExp(`\\b${symbol.replace(/\$/g, '\\$')}\\b`, 'g');
+    const symRegex = new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
     let lastMatchIdx = -1;
     let m;
     while ((m = symRegex.exec(slice)) !== null) {

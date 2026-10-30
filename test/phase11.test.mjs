@@ -90,7 +90,7 @@ export function renderDangerTemplate(props: WidgetProps): string {
     );
 
     // 5. Execute liveHtml script in a mocked DOM VM to verify hydration + isomorphic parity
-    const scriptMatch = liveHtml.match(/<script>([\s\S]*?)<\/script>/);
+    const scriptMatch = liveHtml.match(/<script>([\s\S]*?)<\/script>/i);
     const hydrationMatch = liveHtml.match(
       /<script id="vicem-hydration-data" type="application\/json">([\s\S]*?)<\/script>/
     );
