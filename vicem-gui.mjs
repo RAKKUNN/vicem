@@ -68,18 +68,6 @@ const LOGO_LIGHT_PATH =
     path.resolve(__dirname, '..', 'release', 'logo-light-transparent.png'),
   ].find((p) => fs.existsSync(p)) || path.resolve(__dirname, 'logo-light-transparent.png');
 
-const ANATOMY_DARK_PATH =
-  [
-    path.resolve(__dirname, 'docs', 'anatomy', 'vicem-anatomy.html'),
-    path.resolve(__dirname, '..', 'docs', 'anatomy', 'vicem-anatomy.html'),
-  ].find((p) => fs.existsSync(p)) || path.resolve(__dirname, 'docs', 'anatomy', 'vicem-anatomy.html');
-
-const ANATOMY_LIGHT_PATH =
-  [
-    path.resolve(__dirname, 'docs', 'anatomy', 'vicem-anatomy-light.html'),
-    path.resolve(__dirname, '..', 'docs', 'anatomy', 'vicem-anatomy-light.html'),
-  ].find((p) => fs.existsSync(p)) || path.resolve(__dirname, 'docs', 'anatomy', 'vicem-anatomy-light.html');
-
 export function shortenHome(fullPath, home) {
   if (!fullPath) return '-';
   if (home && fullPath.startsWith(home)) {
@@ -2936,26 +2924,6 @@ export const HTML_PAGE = `<!DOCTYPE html>
     display: flex;
   }
 
-  .workbench-drawer.anatomy-open {
-    max-height: 278px;
-  }
-
-  .wb-anatomy-box {
-    padding: 0;
-    overflow: hidden;
-    height: 214px;
-    max-height: 214px;
-    position: relative;
-  }
-
-  .wb-anatomy-frame {
-    width: 100%;
-    height: 214px;
-    border: none;
-    display: block;
-    background: transparent;
-  }
-
   .wb-header {
     display: flex;
     align-items: center;
@@ -2992,14 +2960,6 @@ export const HTML_PAGE = `<!DOCTYPE html>
     max-height: 155px;
     overflow-y: auto;
     transition: border-color 220ms ease;
-  }
-
-  .wb-box.wb-anatomy-box {
-    padding: 0;
-    overflow: hidden;
-    height: 214px;
-    max-height: 214px;
-    position: relative;
   }
 
   @keyframes codeUnfoldReveal {
@@ -3582,7 +3542,7 @@ export const HTML_PAGE = `<!DOCTYPE html>
         </div>
         <div class="brand-name-wrap">
           <span class="brand-name">Vicem</span>
-          <span class="brand-ver">v1.1.3</span>
+          <span class="brand-ver">v1.1.4</span>
         </div>
         <div class="ws-switcher-bar" id="ws-tabs"></div>
         <button class="add-ws-btn" id="btn-add-ws" onclick="toggleAddWorkspacePopover(event)" title="Open or add any project directory">
@@ -3741,10 +3701,6 @@ export const HTML_PAGE = `<!DOCTYPE html>
       <div class="wb-header">
         <span class="wb-title" id="wb-title">Pipeline Inspector</span>
         <div class="wb-actions">
-          <button class="cmd-btn" id="btn-wb-anatomy" style="height:24px" onclick="toggleAnatomyRig()" title="Toggle Interactive 3D Baton Relay Rig (M)">
-            <span>3D Relay Rig</span>
-            <span class="kbd">M</span>
-          </button>
           <button class="cmd-btn active-toggle" style="height:24px" onclick="syncDietToDisk()">
             <span>Sync Diet to Disk</span>
           </button>
@@ -3839,8 +3795,6 @@ export const HTML_PAGE = `<!DOCTYPE html>
   let agentFilter = urlParams.get('all') === '1' ? 'all' : 'installed';
   let activeWorkbenchTab = 'skeleton';
   let workbenchOpen = false;
-  let anatomyRigOpen = false;
-  let anatomyStationIdx = 2;
   let isEditingGoal = false;
   let relayingTargetId = null;
   let rehydratedPreview = null;
@@ -3878,10 +3832,6 @@ export const HTML_PAGE = `<!DOCTYPE html>
     if (logoImg) logoImg.src = theme === 'light' ? '/logo-light.png' : '/logo-dark.png';
     document.getElementById('theme-icon').textContent = theme === 'light' ? '☾' : '☀';
     document.getElementById('theme-label').textContent = theme === 'light' ? 'Dark' : 'Light';
-    const anatomyFrame = document.getElementById('anatomy-iframe');
-    if (anatomyFrame) {
-      anatomyFrame.src = '/anatomy?embed=1&theme=' + encodeURIComponent(theme);
-    }
   }
 
   function toggleTheme() {
@@ -4156,77 +4106,12 @@ export const HTML_PAGE = `<!DOCTYPE html>
     setStatus('Updated rule mount for ' + relPath);
   }
 
-  function buildAnatomyTokensPayload() {
-    if (!state || !state.stats) return null;
-    const raw = Math.max(1000, state.stats.rawTokens || 42800);
-    const diet = Math.max(200, state.stats.dietTokens || 1920);
-    const s1 = Math.round(raw * 0.34);
-    const s2 = Math.round(diet * 2.1);
-    const s3 = Math.round(diet * 1.25);
-    const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 1 : 2) + 'k' : String(n));
-    const pct = (n) => '-' + Math.max(1, Math.min(99, Math.round((1 - n / raw) * 100))) + '%';
-    return [
-      { tokens: fmt(raw), saving: 'raw' },
-      { tokens: fmt(s1), saving: pct(s1) },
-      { tokens: fmt(s2), saving: pct(s2) },
-      { tokens: fmt(s3), saving: pct(s3) },
-      { tokens: fmt(diet), saving: '-' + (state.stats.savedPct || 95) + '%' },
-    ];
-  }
-
-  function postToAnatomyRig(stationIdx) {
-    if (typeof stationIdx === 'number') anatomyStationIdx = stationIdx;
-    const frame = document.getElementById('anatomy-iframe');
-    if (frame && frame.contentWindow) {
-      frame.contentWindow.postMessage(
-        {
-          station: anatomyStationIdx,
-          tokens: buildAnatomyTokensPayload(),
-        },
-        '*'
-      );
-    }
-  }
-
-  function driveAnatomyStation(idx) {
-    anatomyStationIdx = idx;
-    postToAnatomyRig(idx);
-    renderWorkbench();
-  }
-
-  function toggleAnatomyRig() {
-    if (!workbenchOpen) {
-      workbenchOpen = true;
-      anatomyRigOpen = true;
-    } else {
-      anatomyRigOpen = !anatomyRigOpen;
-    }
-    const stageMap = { harvest: 1, skeleton: 2, ledger: 3, receipt: 4 };
-    anatomyStationIdx = stageMap[activeWorkbenchTab] || 2;
-    triggerCrossfade('workbench-drawer');
-    render();
-    setStatus(
-      anatomyRigOpen
-        ? 'Opened 3D Isometric Baton Relay Rig · Hover or click S0–S4 to drive the context mill'
-        : 'Returned to standard Pipeline Inspector view'
-    );
-  }
-
   function selectWorkbenchTab(tabName) {
-    const stageMap = { harvest: 1, skeleton: 2, ledger: 3, receipt: 4 };
-    if (anatomyRigOpen && workbenchOpen) {
-      activeWorkbenchTab = tabName;
-      anatomyStationIdx = stageMap[tabName] || 2;
-      postToAnatomyRig(anatomyStationIdx);
-      render();
-      return;
-    }
     if (workbenchOpen && activeWorkbenchTab === tabName) {
       workbenchOpen = false;
     } else {
       workbenchOpen = true;
       activeWorkbenchTab = tabName;
-      anatomyStationIdx = stageMap[tabName] || 2;
       triggerCrossfade('workbench-drawer');
     }
     render();
@@ -4318,21 +4203,17 @@ export const HTML_PAGE = `<!DOCTYPE html>
     const titleEl = document.getElementById('wb-title');
     const bodyEl = document.getElementById('wb-body');
     const inspectBtn = document.getElementById('btn-inspect');
-    const anatomyBtn = document.getElementById('btn-wb-anatomy');
 
     if (!state || !workbenchOpen) {
-      drawer.classList.remove('open', 'anatomy-open');
+      drawer.classList.remove('open');
       if (inspectBtn) inspectBtn.classList.remove('active-toggle');
-      if (anatomyBtn) anatomyBtn.classList.remove('active-toggle');
       ['1', '2', '3', '4'].forEach((n) => document.getElementById('pipe-node-' + n)?.classList.remove('active-tab'));
       positionGliders();
       return;
     }
 
     drawer.classList.add('open');
-    drawer.classList.toggle('anatomy-open', anatomyRigOpen);
     if (inspectBtn) inspectBtn.classList.add('active-toggle');
-    if (anatomyBtn) anatomyBtn.classList.toggle('active-toggle', anatomyRigOpen);
 
     const tabIndexMap = { harvest: '1', skeleton: '2', ledger: '3', receipt: '4' };
     ['1', '2', '3', '4'].forEach((n) => {
@@ -4342,88 +4223,6 @@ export const HTML_PAGE = `<!DOCTYPE html>
 
     const sk = state.skeletonSummary || { files: [], totalSymbols: 0 };
     const selectedSess = (state.projectSessions || []).find((s) => s.isSelected) || (state.projectSessions || [])[0];
-
-    if (anatomyRigOpen) {
-      titleEl.textContent =
-        'Interactive 3D Baton Relay Line · Progressive Context Mill (' +
-        state.stats.rawTokens.toLocaleString() +
-        ' -> ' +
-        state.stats.dietTokens.toLocaleString() +
-        ' tok · -' +
-        state.stats.savedPct +
-        '%)';
-      const tokList = buildAnatomyTokensPayload() || [
-        { tokens: '42.8k', saving: 'raw' },
-        { tokens: '14.6k', saving: '-65.9%' },
-        { tokens: '4.85k', saving: '-88.7%' },
-        { tokens: '2.64k', saving: '-93.8%' },
-        { tokens: '1.92k', saving: '-95.5%' },
-      ];
-      const stationSpecs = [
-        { idx: 0, code: 'S0 Feed', desc: 'Source Agent Raw Context Ingot (' + escapeHtml(selectedSess?.agentName || state.workingAgentId) + ')' },
-        { idx: 1, code: 'S1 NoiseGate', desc: 'Shears lockfiles, build artifacts & binary blobs' },
-        { idx: 2, code: 'S2 AST Press', desc: 'Stamps function bodies >=12 lines into .vicem/ledger.json (' + sk.totalSymbols + ' symbols)' },
-        { idx: 3, code: 'S3 Slim Gauge', desc: 'Compresses repetitive logs & JSON arrays via Micrometer Comparator' },
-        { idx: 4, code: 'S4 Relay Dock', desc: 'Docks compacted Baton into Target Agent Receiver Terminal' },
-      ];
-      const pillsHtml = stationSpecs
-        .map(
-          (st) =>
-            '<button class="rule-chip' +
-            (anatomyStationIdx === st.idx ? ' mounted' : '') +
-            '" onclick="driveAnatomyStation(' +
-            st.idx +
-            ')">' +
-            '<strong>' +
-            escapeHtml(st.code) +
-            '</strong>' +
-            '<span style="color:var(--text-muted)">' +
-            escapeHtml(tokList[st.idx].tokens) +
-            '</span>' +
-            '</button>'
-        )
-        .join('');
-      const curSpec = stationSpecs[anatomyStationIdx] || stationSpecs[2];
-      const curTok = tokList[anatomyStationIdx] || tokList[2];
-
-      const existingFrame = document.getElementById('anatomy-iframe');
-      if (existingFrame && bodyEl.querySelector('#anatomy-right-panel')) {
-        const rightPanel = bodyEl.querySelector('#anatomy-right-panel');
-        rightPanel.innerHTML =
-          '<div class="wb-box-title" style="display:flex;justify-content:space-between;align-items:center">' +
-            '<span>Select Transfer Station (or hover 3D rig on left)</span>' +
-            '<a href="/anatomy?theme=' + encodeURIComponent(currentTheme) + '" target="_blank" style="color:var(--accent);text-decoration:none">Full Figure ↗</a>' +
-          '</div>' +
-          '<div class="rule-chip-list" style="margin-bottom:8px">' + pillsHtml + '</div>' +
-          '<div class="prompt-list-item"><strong>' + escapeHtml(curSpec.code) + ' · ' + escapeHtml(curTok.tokens) + ' tok (' + escapeHtml(curTok.saving) + ')</strong></div>' +
-          '<div class="prompt-list-item">' + escapeHtml(curSpec.desc) + '</div>' +
-          '<div class="prompt-list-item" style="color:var(--text-muted)">Click pipeline nodes 1–4 above or Hand off -> below to watch the Baton travel along the mill.</div>';
-        postToAnatomyRig(anatomyStationIdx);
-        return;
-      }
-
-      bodyEl.innerHTML =
-        '<div class="wb-grid-2" style="grid-template-columns: 1.35fr 1fr">' +
-          '<div class="wb-box wb-anatomy-box">' +
-            '<iframe id="anatomy-iframe" class="wb-anatomy-frame" src="/anatomy?embed=1&theme=' + encodeURIComponent(currentTheme) + '"></iframe>' +
-          '</div>' +
-          '<div class="wb-box" id="anatomy-right-panel" style="max-height:214px">' +
-            '<div class="wb-box-title" style="display:flex;justify-content:space-between;align-items:center">' +
-              '<span>Select Transfer Station (or hover 3D rig on left)</span>' +
-              '<a href="/anatomy?theme=' + encodeURIComponent(currentTheme) + '" target="_blank" style="color:var(--accent);text-decoration:none">Full Figure ↗</a>' +
-            '</div>' +
-            '<div class="rule-chip-list" style="margin-bottom:8px">' + pillsHtml + '</div>' +
-            '<div class="prompt-list-item"><strong>' + escapeHtml(curSpec.code) + ' · ' + escapeHtml(curTok.tokens) + ' tok (' + escapeHtml(curTok.saving) + ')</strong></div>' +
-            '<div class="prompt-list-item">' + escapeHtml(curSpec.desc) + '</div>' +
-            '<div class="prompt-list-item" style="color:var(--text-muted)">Click pipeline nodes 1–4 above or Hand off -> below to watch the Baton travel along the mill.</div>' +
-          '</div>' +
-        '</div>';
-      const newFrame = document.getElementById('anatomy-iframe');
-      if (newFrame) {
-        newFrame.addEventListener('load', () => postToAnatomyRig(anatomyStationIdx));
-      }
-      return;
-    }
 
     if (activeWorkbenchTab === 'harvest') {
       titleEl.textContent = 'Stage 1 · Harvested Session Timeline & Active Git Tree (' + state.project + ')';
@@ -4875,8 +4674,6 @@ export const HTML_PAGE = `<!DOCTYPE html>
       state = result;
       workbenchOpen = true;
       activeWorkbenchTab = 'receipt';
-      anatomyStationIdx = 4;
-      postToAnatomyRig(4);
     } catch (error) {
       document.getElementById('simple-result').textContent = 'Could not finish: ' + error.message + '. Review the source and target, then retry.';
       setStatus(error.message + ' — review source and target, then retry');
@@ -4919,7 +4716,6 @@ export const HTML_PAGE = `<!DOCTYPE html>
     else if (k === 'z') triggerBack();
     else if (k === 'c') copyBaton();
     else if (k === 'i') toggleWorkbenchDrawer();
-    else if (k === 'm') toggleAnatomyRig();
     else if (k === 'a') setAgentFilter(agentFilter === 'all' ? 'installed' : 'all');
     else if (k === 't') toggleTheme();
     else if (k === '1') selectWorkbenchTab('harvest');
@@ -5009,32 +4805,6 @@ export const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' });
     fs.createReadStream(LOGO_LIGHT_PATH).pipe(res);
     return;
-  }
-
-  if (url.pathname === '/anatomy') {
-    const theme = url.searchParams.get('theme') === 'light' ? 'light' : 'dark';
-    const embed = url.searchParams.get('embed') === '1';
-    const filePath = theme === 'light' ? ANATOMY_LIGHT_PATH : ANATOMY_DARK_PATH;
-    if (fs.existsSync(filePath)) {
-      let html = fs.readFileSync(filePath, 'utf8');
-      if (embed) {
-        const embedCss = `<style>
-          html, body { padding: 0 !important; margin: 0 !important; min-height: 0 !important; height: 100% !important; overflow: hidden !important; background: transparent !important; }
-          .iso-page { width: 100% !important; max-width: 100% !important; margin: 0 !important; height: 100% !important; }
-          .iso-figure { margin: 0 !important; height: 100% !important; }
-          .iso-plate { box-shadow: none !important; padding: 24px 10px 22px !important; height: 100% !important; display: flex !important; flex-direction: column !important; justify-content: center !important; }
-          .iso-plate-corners { inset: 6px 10px !important; }
-          .iso-plate-corner { font-size: 9.5px !important; }
-          .iso-legend { display: none !important; }
-          .iso-stage { flex: 1 1 auto !important; min-height: 0 !important; display: flex !important; align-items: center !important; justify-content: center !important; }
-          .iso-stage svg { width: 100% !important; height: 166px !important; max-height: 166px !important; }
-        </style>`;
-        html = html.replace('</head>', () => `${embedCss}</head>`);
-      }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(html);
-      return;
-    }
   }
 
   if (url.pathname === '/api/state') {
