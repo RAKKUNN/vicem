@@ -172,3 +172,27 @@ shasum -a 256 -c SHA256SUMS
 # 3. Run the 52-test automated suite
 node --test test/*.test.mjs
 ```
+
+
+## Reviewed handoffs and safe recovery
+
+Start the local interface with `node vicem.mjs gui`. Select the project and source conversation, edit the goal, choose the destination and launch mode, then review before delivery. Technical telemetry is available under details.
+
+- `node vicem.mjs codex --preview`: preview without saving handoff artifacts or launching an app.
+- `node vicem.mjs codex --preview --json`: structured preview for automation.
+- `node vicem.mjs status --json` / `node vicem.mjs history --json`: inspect recorded outcomes.
+- `node vicem.mjs undo <handoff-id>`: restore instruction changes for that handoff only. If those instructions have since changed, recovery refuses to overwrite them. This does not undo agent edits to source code.
+
+The GUI rejects a reviewed handoff if its content changes before delivery. Delivery and application launch do not establish that an agent has read the context: reception remains unconfirmed. The preview token is a consistency check, not authentication. Legacy `--dry-run` still writes handoff artifacts; use `--preview` for a read-only preview.
+
+Validation: automated unit/integration tests and local macOS browser checks. Windows/Linux real-agent launch and actual target-agent reception are not certified by these tests. GUI and CLI share preparation, rule mounting, outcome history and instruction recovery; platform launch adapters remain distinct.
+
+
+See [compatibility verification](docs/COMPATIBILITY.md) for tested operating systems, actual agent read proofs, and limitations.
+
+
+### Automatic launch and manual continuation
+
+Windows CLI/package behavior is verified in native CI on Node 22 and 24. Windows desktop integration remains Preview; desktop auto-launch on every OS is best effort. [View the passing CI run](https://github.com/RAKKUNN/vicem/actions/runs/41040234570) and [the precise support scope](docs/COMPATIBILITY.md).
+
+If automatic launch fails, the handoff stays saved. The GUI provides **Copy command**, **Copy start prompt**, and the saved file path. Open the destination manually, select your project, and paste the start prompt. CLI failures provide the same guide. Successful delivery does not confirm that an agent read it.

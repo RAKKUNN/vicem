@@ -1,0 +1,31 @@
+name: Compatibility
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  portable:
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm run build
+      - run: npm run test:compat
+      - run: node --test test/product-safety.test.mjs test/manual-recovery.test.mjs
+      - name: Pack and install the distributable
+        shell: pwsh
+        run: |
+          $package = (npm pack --json | ConvertFrom-Json)[0].filename
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm install --prefix .ci-install --ignore-scripts --no-audit --no-fund "./$package"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .ci-install/node_modules/@rakkunn/vicem/vicem.mjs --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .ci-install/node_modules/@rakkunn/vicem/scripts/compat-smoke.mjs .ci-install/node_modules/@rakkunn/vicem
