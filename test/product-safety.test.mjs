@@ -104,7 +104,10 @@ test('Windows manual command runs in the intended folder and stops on a missing 
   const guide=HandoffService.manualGuide(root,'codex','win32');
   const result=invoke(guide);
   assert.equal(result.status,0,result.stderr);
-  assert.equal(fs.readFileSync(capture,'utf8'),root+'\n'+guide.prompt);
+  const [actualDirectory, ...promptLines] = fs.readFileSync(capture,'utf8').split('\n');
+  // PowerShell expands Windows 8.3 aliases (RUNNER~1) to their long path.
+  assert.equal(fs.realpathSync.native(actualDirectory),fs.realpathSync.native(root));
+  assert.equal(promptLines.join('\n'),guide.prompt);
   fs.rmSync(capture);
   const missing=invoke(HandoffService.manualGuide(path.join(root,'missing'),'codex','win32'));
   assert.notEqual(missing.status,0);
