@@ -4038,11 +4038,35 @@ export class RuleMountAdapter {
     }
   }
 
+  static stripMountBlocks(content) {
+    const markers = /<!-- VICEM-BATON-(START|END) -->/g;
+    let depth = 0, start = 0, cursor = 0, result = '';
+    for (const match of content.matchAll(markers)) {
+      if (match[1] === 'START') {
+        if (depth++ === 0) start = match.index;
+        continue;
+      }
+      if (depth === 0) throw new Error('Incomplete Vicem rule block; repair it before changing instructions');
+      if (--depth !== 0) continue;
+      // Remove the separator added by mount, but keep a newline between user notes.
+      if (content.slice(0, start).endsWith('\r\n\r\n')) start -= 2;
+      else if (content.slice(0, start).endsWith('\n\n')) start--;
+      let end = match.index + match[0].length;
+      if (content.slice(end, end + 2) === '\r\n') end += 2;
+      else if (content[end] === '\n') end++;
+      result += content.slice(cursor, Math.max(cursor, start));
+      cursor = end;
+    }
+    if (depth !== 0) throw new Error('Incomplete Vicem rule block; repair it before changing instructions');
+    return result + content.slice(cursor);
+  }
+
   static mount(projectRoot, targetAgent, batonMarkdown) {
     const resolvedRoot = path.resolve(projectRoot);
     AtomicFs.ensureVicemDir(resolvedRoot);
     const { relPath, absPath } = RuleMountAdapter.getRuleFilePath(resolvedRoot, targetAgent);
 
+    if (!AtomicFs.isSafeRepoFilePath(resolvedRoot, relPath)) throw new Error('Unsafe rule path');
     const backups = RuleMountAdapter.loadBackups(resolvedRoot);
     const existed = fs.existsSync(absPath);
     const currentContent = existed ? fs.readFileSync(absPath, 'utf8') : '';
@@ -4060,12 +4084,7 @@ export class RuleMountAdapter {
       );
     }
 
-    const start = currentContent.indexOf(RuleMountAdapter.START_MARKER);
-    const end = currentContent.indexOf(RuleMountAdapter.END_MARKER);
-    if (start >= 0 && end < start) throw new Error('Incomplete Vicem rule block; restore or repair it before mounting');
-    const baseContent = start >= 0
-      ? currentContent.slice(0, start).replace(/\n$/, '') + currentContent.slice(end + RuleMountAdapter.END_MARKER.length).replace(/^\n/, '')
-      : currentContent;
+    const baseContent = RuleMountAdapter.stripMountBlocks(currentContent);
     const mountBlock = `${RuleMountAdapter.START_MARKER}\n${batonMarkdown.trim()}\n${RuleMountAdapter.END_MARKER}`;
     const separator = baseContent.length > 0 && !baseContent.endsWith('\n') ? '\n\n' : baseContent.length > 0 ? '\n' : '';
     const updatedContent = baseContent + separator + mountBlock + '\n';
@@ -4089,6 +4108,7 @@ export class RuleMountAdapter {
 
     const unmountedFiles = [];
     for (const relPath of targetsToRestore) {
+      if (!AtomicFs.isSafeRepoFilePath(resolvedRoot, relPath)) throw new Error('Unsafe rule path');
       const absPath = path.join(resolvedRoot, relPath);
       const record = backups[relPath];
 
@@ -4096,9 +4116,7 @@ export class RuleMountAdapter {
         if (!record.existed) {
           if (fs.existsSync(absPath)) {
             const current = fs.readFileSync(absPath, 'utf8');
-            const stripped = current
-              .replace(/\n?<!-- VICEM-BATON-START -->[\s\S]*<!-- VICEM-BATON-END -->\n?/g, '')
-              .trim();
+            const stripped = RuleMountAdapter.stripMountBlocks(current).trim();
             if (!stripped) {
               fs.unlinkSync(absPath);
             } else {
@@ -4108,10 +4126,7 @@ export class RuleMountAdapter {
           }
         } else if (fs.existsSync(absPath)) {
           const current = fs.readFileSync(absPath, 'utf8');
-          const stripped = current.replace(
-            /\n?<!-- VICEM-BATON-START -->[\s\S]*<!-- VICEM-BATON-END -->\n?/g,
-            ''
-          );
+          const stripped = RuleMountAdapter.stripMountBlocks(current);
           if (stripped.trim() === (record.originalContent || '').trim()) {
             // Byte-exact restoration when user made no external edits outside markers (TC-DELIV-01)
             AtomicFs.writeFileAtomic(absPath, record.originalContent);
@@ -4127,10 +4142,7 @@ export class RuleMountAdapter {
         // Fallback regex strip if backup record was missing
         const content = fs.readFileSync(absPath, 'utf8');
         if (content.includes(RuleMountAdapter.START_MARKER)) {
-          const stripped = content.replace(
-            /\n?<!-- VICEM-BATON-START -->[\s\S]*<!-- VICEM-BATON-END -->\n?/g,
-            ''
-          );
+          const stripped = RuleMountAdapter.stripMountBlocks(content);
           if (!stripped.trim()) {
             fs.unlinkSync(absPath);
           } else {
@@ -5578,6 +5590,7 @@ Options:
   --dry-run               Build baton and print receipt without launching external binary
   --uninstall             Remove Vicem pre-commit hook cleanly when used with 'vicem init'
   --profile <dir>         Custom profile directory for multi-account relay (UC-08)
+  --goal <text>          Set the goal for preview and delivery
   --preview              Preview target baton without writes or launch
   --json                 Structured result output
   status / history       Inspect recent handoff outcomes
@@ -5671,7 +5684,9 @@ Options:
       const detected = await SmartInferenceEngine.autoDetectSource(projectRoot, env);
       const session = detected.harvester ? await detected.harvester.harvestSession() : null;
       const git = GitCollector.collect(projectRoot);
-      const baton = HandoffService.prepare({ projectRoot, sourceAgent: detected.agent || 'git', targetAgent: match.matched, taskContext: DeterministicTaskExtractor.extract(session?.rawEvents || [], git), gitContext: git, budgetTokens: flags.budgetTokens, persist: false });
+      const task = DeterministicTaskExtractor.extract(session?.rawEvents || [], git);
+      if (flags.goal) { task.goal = flags.goal; task.immediateNext = [flags.goal]; }
+      const baton = HandoffService.prepare({ projectRoot, sourceAgent: detected.agent || 'git', targetAgent: match.matched, taskContext: task, gitContext: git, budgetTokens: flags.budgetTokens, persist: false });
       outStream.write(flags.json ? JSON.stringify({ status: 'preview', receptionConfirmed: false, ...baton.json, markdown: baton.markdown }) + '\n' : baton.markdown + '\n');
       return { exitCode: 0, mode: 'preview', baton };
     }

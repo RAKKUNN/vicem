@@ -5,6 +5,52 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { RuleMountAdapter, VicemApp, HandoffService, CliLauncherAdapter } from '../vicem.mjs';
+test('CLI preview respects an explicit goal without writing artifacts', async () => {
+ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vicem-preview-goal-'));
+ try {
+  const goal = 'Implement the reviewed recovery behavior';
+  const result = await VicemApp.run(['codex', '--preview', '--goal', goal], {projectRoot:root, stdout:{write(){}}});
+  assert.equal(result.exitCode, 0);
+  assert.ok(result.baton.markdown.includes('## 1. Goal\n' + goal));
+  assert.ok(result.baton.markdown.includes('1. **' + goal + '**'));
+  assert.equal(fs.existsSync(path.join(root,'.vicem')), false);
+ } finally {fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('Removing handoff blocks preserves intervening notes and handles nested markers', () => {
+ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vicem-blocks-'));
+ const {START_MARKER:start, END_MARKER:end} = RuleMountAdapter;
+ try {
+  const file = path.join(root,'CLAUDE.md');
+  fs.writeFileSync(file,'Original rules\n');
+  RuleMountAdapter.mount(root,'claude',`${start}\nNested content\n${end}`);
+  fs.appendFileSync(file,`User note between blocks\n${start}\nAnother block\n${end}\nFinal user note\n`);
+  RuleMountAdapter.unmount(root,'claude');
+  assert.equal(fs.readFileSync(file,'utf8'),'Original rules\nUser note between blocks\nFinal user note\n');
+  RuleMountAdapter.mount(root,'claude',`${start}\nNested content\n${end}`);
+  RuleMountAdapter.mount(root,'claude','Replacement handoff');
+  RuleMountAdapter.unmount(root,'claude');
+  assert.equal(fs.readFileSync(file,'utf8'),'Original rules\nUser note between blocks\nFinal user note\n');
+  fs.appendFileSync(file,start+'\nUnfinished block');
+  const before = fs.readFileSync(file,'utf8');
+  assert.throws(()=>RuleMountAdapter.unmount(root,'claude'),/Incomplete/);
+  assert.equal(fs.readFileSync(file,'utf8'),before);
+ } finally {fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('Unmount rejects backup paths outside the selected project', () => {
+ const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'vicem-unmount-boundary-'));
+ const root = path.join(parent,'project');
+ try {
+  fs.mkdirSync(path.join(root,'.vicem'),{recursive:true});
+  const outside = path.join(parent,'outside.md');
+  fs.writeFileSync(outside,'Unrelated project rules\n');
+  fs.writeFileSync(path.join(root,'.vicem','mount_backups.json'),JSON.stringify({'../outside.md':{existed:true,originalContent:'Injected rules'}}));
+  assert.throws(()=>RuleMountAdapter.unmount(root),/Unsafe rule path/);
+  assert.equal(fs.readFileSync(outside,'utf8'),'Unrelated project rules\n');
+ } finally {fs.rmSync(parent,{recursive:true,force:true});}
+});
+
 test('Claude mount preserves existing instructions and edits across remount', () => {
  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vicem-safe-'));
  try {
