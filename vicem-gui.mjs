@@ -3542,7 +3542,7 @@ export const HTML_PAGE = `<!DOCTYPE html>
         </div>
         <div class="brand-name-wrap">
           <span class="brand-name">Vicem</span>
-          <span class="brand-ver">v1.1.4</span>
+          <span class="brand-ver">v1.1.5</span>
         </div>
         <div class="ws-switcher-bar" id="ws-tabs"></div>
         <button class="add-ws-btn" id="btn-add-ws" onclick="toggleAddWorkspacePopover(event)" title="Open or add any project directory">

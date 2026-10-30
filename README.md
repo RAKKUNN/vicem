@@ -12,7 +12,7 @@
   <a href="https://glama.ai/mcp/servers/RAKKUNN/vicem"><img src="https://glama.ai/mcp/servers/RAKKUNN/vicem/badges/score.svg" alt="Vicem MCP server rated A on Glama" /></a>
   <a href="https://mcpservers.org/servers/rakkunn/vicem"><img src="https://mcpservers.org/badge.svg" alt="Listed on mcpservers.org" /></a>
   <a href="https://www.npmjs.com/package/vicem-cli"><img src="https://img.shields.io/npm/v/vicem-cli?color=CB3837&label=npm%20(vicem-cli)" alt="npm vicem-cli" /></a>
-  <a href="https://github.com/RAKKUNN/vicem/releases/tag/v1.1.4"><img src="https://img.shields.io/badge/release-v1.1.4%20(Kinetic%20GUI)-10B981" alt="Release v1.1.4" /></a>
+  <a href="https://github.com/RAKKUNN/vicem/releases/tag/v1.1.5"><img src="https://img.shields.io/badge/release-v1.1.5-10B981" alt="Release v1.1.5" /></a>
   <img src="https://img.shields.io/badge/dependencies-0-3B82F6" alt="Zero Dependencies" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-F59E0B" alt="MIT License" /></a>
 </p>
@@ -27,9 +27,9 @@
 
 ## ⚡ 10-Second Quick Start (`npx` — Zero Install)
 
-### 1. Run the Local Desktop Utility GUI or Pass a Baton Immediately
+### 1. Run the Local Handoff GUI or Pass a Baton Immediately
 ```bash
-# Launch the local Desktop Utility GUI (12 agents, 4-stage pipeline inspector, live token/quota HUD)
+# Launch the local Handoff GUI (3-step guided handoff, preview confirmation & manual recovery)
 npx -y vicem-cli gui
 
 # Or pack a compressed baton from your current repo & hand off in 1 command
@@ -81,11 +81,13 @@ Add to `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`, or `claude_d
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./gui-dark.png" />
     <source media="(prefers-color-scheme: light)" srcset="./gui-light.png" />
-    <img src="./gui-dark.png" width="100%" alt="Vicem Unified Desktop Utility GUI (Dark & Light Mode)" />
+    <img src="./gui-dark.png" width="100%" alt="Vicem Guided Handoff GUI (Dark & Light Mode)" />
   </picture>
 </p>
 
-![Vicem 3-Second Context Baton & Diet Demo](./demo.gif)
+1. **Review your work (`01 · Source conversation`)**: Select the active project and source conversation, and inspect or edit the extracted handoff goal.
+2. **Choose a destination (`02 · Choose a destination`)**: Pick the target agent (`Claude Code`, `OpenAI Codex`, `Cursor`, `Antigravity`, `Gemini CLI`, `Windsurf`, `VS Code`, `Web Chat`) and delivery action (`Open the app`, `Open in terminal`, or `Prepare handoff only`).
+3. **Review and hand off (`03 · Review handoff`)**: Inspect the exact `.vicem/BATON.md` summary before anything is written or launched. If automatic launch is unavailable, copy the saved `BATON.md` path, shell continuation command, and start prompt directly from the recovery panel.
 
 ```text
 $ npx -y vicem-cli codex
@@ -169,7 +171,7 @@ node -e "console.log(JSON.parse(fs.readFileSync('package.json')).dependencies ??
 # 2. Verify SHA-256 checksums of all core artifacts
 shasum -a 256 -c SHA256SUMS
 
-# 3. Run the 52-test automated suite
+# 3. Run the 769-test automated suite
 node --test test/*.test.mjs
 ```
 
