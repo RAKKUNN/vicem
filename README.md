@@ -41,12 +41,15 @@ npx -y vicem-cli cursor
 npx -y vicem-cli setup
 ```
 
-### 2. Add as an MCP Server in 1 Line (Claude Code / Codex / Cursor)
+### 2. Add as an Agent Skill & MCP Server in 1 Line (Claude Code / Codex / Cursor)
 ```bash
-# Claude Code
+# Install the Agent Skill globally (Claude Code, Cursor, Codex, Antigravity, Windsurf)
+npx skills add RAKKUNN/vicem -g
+
+# Claude Code MCP Server
 claude mcp add vicem -- npx -y vicem-cli mcp
 
-# OpenAI Codex CLI
+# OpenAI Codex CLI MCP Server
 codex mcp add vicem -- npx -y vicem-cli mcp
 ```
 
