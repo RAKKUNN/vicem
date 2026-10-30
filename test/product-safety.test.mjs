@@ -1,3 +1,4 @@
+import childProcess from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -79,7 +80,7 @@ test('wrap dry-run never launches an absent agent and missing agent returns an e
 test('manual continuation quotes Windows and POSIX paths and does not claim reception', () => {
  const windows=HandoffService.manualGuide("C:\\Work\\O'Brien $demo",'codex','win32');
  assert.equal(windows.shell,'PowerShell');
- assert.ok(windows.command.startsWith("Set-Location -LiteralPath 'C:\\Work\\O''Brien $demo'"));
+ assert.ok(windows.command.startsWith("& { Set-Location -LiteralPath 'C:\\Work\\O''Brien $demo'"));
  assert.ok(windows.command.includes("\ncodex 'Read .vicem/BATON.md"));
  assert.equal(windows.receptionConfirmed,false);
  const posix=HandoffService.manualGuide("/tmp/O'Brien $demo",'claude','linux');
@@ -90,4 +91,23 @@ test('manual continuation quotes Windows and POSIX paths and does not claim rece
  const web=HandoffService.manualGuide('/tmp/project','web','linux');
  assert.equal(web.command,"cd '/tmp/project'");
  assert.match(web.instructions,/manually/);
+});
+
+
+test('Windows manual command runs in the intended folder and stops on a missing folder', {skip: process.platform !== 'win32'}, () => {
+ const root=fs.mkdtempSync(path.join(os.tmpdir(), "vicem manual O'Brien 한글 "));
+ const capture=path.join(root,'capture.txt');
+ try {
+  const invoke = guide => childProcess.spawnSync('pwsh', ['-NoProfile','-NonInteractive','-Command',
+   `function codex { [System.IO.File]::WriteAllText($env:VICEM_MANUAL_CAPTURE, ($PWD.Path + "\n" + $args[0])) }\n${guide.command}`],
+   {encoding:'utf8',timeout:15000,env:{...process.env,VICEM_MANUAL_CAPTURE:capture}});
+  const guide=HandoffService.manualGuide(root,'codex','win32');
+  const result=invoke(guide);
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(fs.readFileSync(capture,'utf8'),root+'\n'+guide.prompt);
+  fs.rmSync(capture);
+  const missing=invoke(HandoffService.manualGuide(path.join(root,'missing'),'codex','win32'));
+  assert.notEqual(missing.status,0);
+  assert.equal(fs.existsSync(capture),false,'must not launch an agent in the wrong folder');
+ } finally {fs.rmSync(root,{recursive:true,force:true});}
 });

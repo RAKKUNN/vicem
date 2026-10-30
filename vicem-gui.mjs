@@ -3676,7 +3676,7 @@ export const HTML_PAGE = `<!DOCTYPE html>
       <select id="simple-target" aria-label="Target agent"></select>
       <label for="simple-launch" style="margin-top:16px">After delivery</label><select id="simple-launch" onchange="launchMode=this.value"><option value="app">Open the app</option><option value="cli">Open in terminal</option><option value="off">Prepare handoff only</option></select><button id="simple-start" onclick="startSimpleHandoff()">Review handoff <span aria-hidden="true">→</span></button>
       <button onclick="document.documentElement.classList.toggle('simple-view')">Technical details</button>
-      <div id="platform-support" role="note" style="margin-top:16px;color:var(--text-secondary);font-size:12px"></div><div id="simple-result" role="status" aria-live="polite">Nothing has been delivered yet. Review the handoff before continuing.</div>
+      <div id="platform-support" role="note" style="margin-top:16px;color:var(--text-secondary);font-size:12px"></div><a id="support-evidence" href="https://github.com/RAKKUNN/vicem/actions/runs/41040234570" target="_blank" rel="noopener noreferrer" style="font-size:12px">View CI evidence ↗</a><div id="simple-result" role="status" aria-live="polite">Nothing has been delivered yet. Review the handoff before continuing.</div>
     </section>
     <section id="manual-continuation" class="continue-card" hidden aria-labelledby="manual-title">
       <span class="eyebrow">CONTINUE MANUALLY</span><h2 id="manual-title">Your handoff is saved.</h2>

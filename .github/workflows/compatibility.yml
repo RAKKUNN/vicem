@@ -18,7 +18,7 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: npm run build
       - run: npm run test:compat
-      - run: node --test test/product-safety.test.mjs
+      - run: node --test test/product-safety.test.mjs test/manual-recovery.test.mjs
       - name: Pack and install the distributable
         shell: pwsh
         run: |

@@ -3906,8 +3906,9 @@ export class HandoffService {
     const windows = platform === 'win32';
     return {
       platform,
-      label: windows ? 'Windows Preview' : platform === 'darwin' ? 'macOS' : 'Linux',
-      cli: windows ? 'Windows runtime checks passed under Wine. Native Windows CI pending.' : 'Local automated suite passed.',
+      label: windows ? 'Windows Preview' : platform === 'darwin' ? 'macOS' : platform === 'linux' ? 'Linux' : platform,
+      cli: ['win32', 'darwin', 'linux'].includes(platform) ? 'CLI and package checks passed in native CI on Node 22 and 24.' : 'This operating system has not been verified.',
+      ciEvidence: 'https://github.com/RAKKUNN/vicem/actions/runs/41040234570',
       desktop: 'Desktop auto-launch is best effort; manual continuation is available.',
       reception: 'Delivery does not confirm that the destination has read the handoff.',
     };
@@ -3918,13 +3919,13 @@ export class HandoffService {
     const prompt = `Read .vicem/BATON.md in ${projectRoot}. Continue from Section 2 (Immediate NEXT), and report any missing context before making changes.`;
     const commands = {codex:'codex', claude:'claude', gemini:'gemini', aider:'aider', cursor:'cursor', vscode:'code', windsurf:'windsurf', antigravity:'agy'};
     const executable = commands[targetAgent];
-    const folderCommand = windows ? `Set-Location -LiteralPath ${quote(projectRoot)}` : `cd ${quote(projectRoot)}`;
+    const folderCommand = windows ? `Set-Location -LiteralPath ${quote(projectRoot)} -ErrorAction Stop` : `cd ${quote(projectRoot)}`;
     const ide = ['cursor','vscode','windsurf','antigravity'].includes(targetAgent);
     const args = targetAgent === 'aider' ? '--read .vicem/BATON.md' : ide ? '.' : quote(prompt);
     return {
       targetAgent, shell: windows ? 'PowerShell' : 'Terminal', projectRoot,
       batonPath: (windows ? path.win32 : path).join(projectRoot, '.vicem', 'BATON.md'),
-      prompt, command: executable ? `${folderCommand}${windows ? '\n' : ' && '}${executable} ${args}` : folderCommand,
+      prompt, command: executable ? (windows ? `& { ${folderCommand}\n${executable} ${args}\n}` : `${folderCommand} && ${executable} ${args}`) : folderCommand,
       instructions: executable ? 'Run the command if the destination is installed, or open it manually and paste the start prompt.' : 'Open your destination manually, select this project, and paste the start prompt.',
       receptionConfirmed: false,
     };
