@@ -2,7 +2,7 @@
 
 | Environment | Result | Scope |
 |---|---|---|
-| macOS ARM64, Node 25.9.0 | 766/766 tests passed before the final recovery additions | Complete automated suite, local GUI checks |
+| macOS ARM64, Node 25.9.0 | 767 tests passed; 1 Windows-only test deferred to native CI | Complete automated suite, local GUI checks |
 | Ubuntu 24.04 ARM64 VM, Node 22.23.4 | 764/764 tests passed | Complete automated suite; actual Linux kernel 6.8.0-101-generic |
 | Native Windows GitHub runner, Node 22 and 24 | CI passed | CLI startup, portable handoff contracts, safety tests, npm pack/install and installed-package smoke checks |
 | Native macOS and Ubuntu GitHub runners, Node 22 and 24 | CI passed | Same portable and package checks |
