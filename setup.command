@@ -4,7 +4,10 @@
 
 cd "$(dirname "$0")" || exit 1
 chmod +x ./vicem.mjs 2>/dev/null
-node ./vicem.mjs setup
+node ./vicem.mjs setup || {
+  echo "[ERR] Vicem setup failed. Check the error above and try again." >&2
+  exit 1
+}
 echo ""
 echo "================================================================"
 echo "[OK] Vicem 1-Click Setup Complete!"

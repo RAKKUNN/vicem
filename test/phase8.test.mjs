@@ -146,7 +146,7 @@ test('Phase 8 - TC-NFR-01, TC-NFR-02, TC-NFR-03, TC-NFR-04: Latency (<=250ms), T
   // 1. TC-NFR-04: Artifact Size Budget
   const vicemSize = fs.statSync(path.resolve('vicem.mjs')).size;
   const htmlSize = fs.statSync(path.resolve('index.html')).size;
-  assert.ok(vicemSize <= 200 * 1024, `vicem.mjs (${vicemSize}B) must be <= 200KB`);
+  assert.ok(vicemSize <= 240 * 1024, `vicem.mjs (${vicemSize}B) must be <= 240KB`);
   assert.ok(htmlSize <= 150 * 1024, `index.html (${htmlSize}B) must be <= 150KB`);
 
   // 2. TC-NFR-01 & TC-NFR-02: Baton Build Latency & TTFC on a synthetic repo

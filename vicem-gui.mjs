@@ -14,6 +14,7 @@
  */
 
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -21,6 +22,10 @@ import { execSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import {
+  AtomicFs,
+  HandoffService,
+  NoiseGate,
+  matchesProjectPathBoundary,
   DoctorDiagnostics,
   SmartInferenceEngine,
   GitCollector,
@@ -30,6 +35,7 @@ import {
   ClipboardAdapter,
   DietLedger,
   CodeSkeletonizer,
+  SecretRedactor,
   StalenessDriftGuard,
   TokenEstimator,
   VicemApp,
@@ -62,15 +68,27 @@ const LOGO_LIGHT_PATH =
     path.resolve(__dirname, '..', 'release', 'logo-light-transparent.png'),
   ].find((p) => fs.existsSync(p)) || path.resolve(__dirname, 'logo-light-transparent.png');
 
-function shortenHome(fullPath, home) {
+const ANATOMY_DARK_PATH =
+  [
+    path.resolve(__dirname, 'docs', 'anatomy', 'vicem-anatomy.html'),
+    path.resolve(__dirname, '..', 'docs', 'anatomy', 'vicem-anatomy.html'),
+  ].find((p) => fs.existsSync(p)) || path.resolve(__dirname, 'docs', 'anatomy', 'vicem-anatomy.html');
+
+const ANATOMY_LIGHT_PATH =
+  [
+    path.resolve(__dirname, 'docs', 'anatomy', 'vicem-anatomy-light.html'),
+    path.resolve(__dirname, '..', 'docs', 'anatomy', 'vicem-anatomy-light.html'),
+  ].find((p) => fs.existsSync(p)) || path.resolve(__dirname, 'docs', 'anatomy', 'vicem-anatomy-light.html');
+
+export function shortenHome(fullPath, home) {
   if (!fullPath) return '-';
-  if (fullPath.startsWith(home)) {
+  if (home && fullPath.startsWith(home)) {
     return '~' + fullPath.slice(home.length);
   }
   return fullPath;
 }
 
-function formatAgo(mtimeMs) {
+export function formatAgo(mtimeMs) {
   if (!mtimeMs) return '-';
   const diffSec = Math.max(1, Math.floor((Date.now() - mtimeMs) / 1000));
   if (diffSec < 60) return 'Just now';
@@ -79,7 +97,7 @@ function formatAgo(mtimeMs) {
   return `${Math.floor(diffSec / 86400)}d ago`;
 }
 
-function formatResetShort(resetEpochSec) {
+export function formatResetShort(resetEpochSec) {
   if (!resetEpochSec) return '';
   const diffSec = Math.max(0, Math.floor(resetEpochSec - Date.now() / 1000));
   if (diffSec <= 0) return 'Resets now';
@@ -91,11 +109,11 @@ function formatResetShort(resetEpochSec) {
   return `Resets in ${m}m`;
 }
 
-function shellQuote(value) {
-  return "'" + String(value).replaceAll("'", "'\"'\"'") + "'";
+export function shellQuote(value) {
+  return "'" + String(value ?? '').replaceAll("'", "'\"'\"'") + "'";
 }
 
-function readHeadAndTailUtf8(filePath, headBytes = 24576, tailBytes = 98304) {
+export function readHeadAndTailUtf8(filePath, headBytes = 24576, tailBytes = 98304) {
   try {
     const st = fs.statSync(filePath);
     if (st.size <= headBytes + tailBytes) {
@@ -116,7 +134,7 @@ function readHeadAndTailUtf8(filePath, headBytes = 24576, tailBytes = 98304) {
   }
 }
 
-function getIdeUserDir(ideName, home) {
+export function getIdeUserDir(ideName, home) {
   if (process.platform === 'darwin') {
     return path.join(home, 'Library', 'Application Support', ideName, 'User');
   }
@@ -164,14 +182,14 @@ function openExternalCrossPlatform(urlOrPath, macAppPath = null) {
 
 const binaryCache = new Map();
 
-function resolveAgentBinary(agentId, home) {
+export function resolveAgentBinary(agentId, home) {
   if (binaryCache.has(agentId)) return binaryCache.get(agentId);
   const found = resolveAgentBinaryUncached(agentId, home);
   binaryCache.set(agentId, found);
   return found;
 }
 
-function resolveAgentBinaryUncached(agentId, home) {
+export function resolveAgentBinaryUncached(agentId, home) {
   const isWin = process.platform === 'win32';
   const exts = isWin ? ['.exe', '.cmd', '.bat', ''] : [''];
 
@@ -247,7 +265,8 @@ function resolveAgentBinaryUncached(agentId, home) {
   return null;
 }
 
-function isPidAlive(pid) {
+export function isPidAlive(pid) {
+  if (!pid || typeof pid !== 'number' || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -843,7 +862,7 @@ const customWorkspacePaths = new Set();
  * Discovers all real sessions belonging to `projectRoot` across Antigravity, Claude Code,
  * OpenAI Codex, Cursor/VS Code/Windsurf, plus the live Git Working Tree.
  */
-function discoverProjectSessions(projectRoot, home, git) {
+export function discoverProjectSessions(projectRoot, home, git) {
   const sessions = [];
   const pathRegex = new RegExp(
     projectRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\/([A-Za-z0-9_./-]+\\.[A-Za-z0-9]+)',
@@ -868,7 +887,7 @@ function discoverProjectSessions(projectRoot, home, git) {
       for (const c of candidates.slice(0, 14)) {
         try {
           const raw = readHeadAndTailUtf8(c.path);
-          if (!raw.includes(projectRoot)) continue;
+          if (!matchesProjectPathBoundary(raw, projectRoot)) continue;
           const prompts = [];
           const assistantDigest = [];
           const touched = new Set();
@@ -1009,16 +1028,25 @@ function discoverProjectSessions(projectRoot, home, git) {
     for (const item of codexFiles.slice(0, 15)) {
       try {
         const raw = readHeadAndTailUtf8(item.path);
-        if (!raw.includes(projectRoot)) continue;
         const lines = raw.trim().split('\n');
+        const belongsToProject = lines.slice(0, 10).some(line => {
+          try { const event = JSON.parse(line); const cwd = event.payload?.cwd || event.cwd || event.projectRoot; return typeof cwd === 'string' && path.resolve(cwd) === path.resolve(projectRoot); } catch { return false; }
+        });
+        if (!belongsToProject) continue;
         const prompts = [];
         let model = 'gpt-6-astra';
         for (const l of lines) {
           try {
             const obj = JSON.parse(l);
             if (obj.type === 'turn_context' && obj.payload?.model) model = obj.payload.model;
-            if (obj.payload?.role === 'user' && Array.isArray(obj.payload?.content)) {
-              const txt = obj.payload.content.find((c) => c.text)?.text || '';
+            const uRole = obj.payload?.role || obj.role;
+            const uContent = obj.payload?.content ?? obj.content;
+            if (uRole === 'user') {
+              const txt = Array.isArray(uContent)
+                ? uContent.find((c) => c.text)?.text || ''
+                : typeof uContent === 'string'
+                  ? uContent
+                  : '';
               if (txt && !txt.startsWith('<')) prompts.push(txt.replace(/\s+/g, ' ').trim().slice(0, 180));
             }
           } catch {}
@@ -1077,19 +1105,28 @@ function discoverProjectSessions(projectRoot, home, git) {
  * and inspects `.vicem/ledger.json` + `.vicem/BATON.md` on disk so the user can see and test
  * the exact AST skeletonization & symbol rehydration in real time.
  */
-function collectLiveSkeletonLedger(projectRoot, activeFiles, persistToDisk = false) {
+export function collectLiveSkeletonLedger(projectRoot, activeFiles, persistToDisk = false) {
   const codeCandidates = [...(activeFiles || [])].filter((f) =>
     /\.(mjs|js|ts|tsx|jsx|py|go|rs|java|c|cpp|h)$/i.test(f)
   );
   if (codeCandidates.length === 0) {
-    try {
-      for (const entry of fs.readdirSync(projectRoot)) {
-        if (/\.(mjs|js|ts|tsx|jsx|py|go|rs|java|c|cpp)$/i.test(entry) && !entry.startsWith('.')) {
-          codeCandidates.push(entry);
+    const scanFallbackCode = (dir, relPrefix = '', depth = 0) => {
+      if (depth > 2 || codeCandidates.length >= 4) return;
+      try {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (codeCandidates.length >= 4) break;
+          if (entry.name.startsWith('.')) continue;
+          const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+          if (NoiseGate.isIgnored(rel)) continue;
+          if (entry.isFile() && /\.(mjs|js|ts|tsx|jsx|py|go|rs|java|c|cpp|h)$/i.test(entry.name)) {
+            codeCandidates.push(rel);
+          } else if (entry.isDirectory() && depth < 2) {
+            scanFallbackCode(path.join(dir, entry.name), rel, depth + 1);
+          }
         }
-        if (codeCandidates.length >= 4) break;
-      }
-    } catch {}
+      } catch {}
+    };
+    scanFallbackCode(projectRoot, '', 0);
   }
 
   const liveLedger = new DietLedger(`baton-${Date.now()}`);
@@ -1182,7 +1219,7 @@ function collectLiveSkeletonLedger(projectRoot, activeFiles, persistToDisk = fal
  * Harvests rich, multi-turn conversation history, tool actions, and active files
  * from the selected or most recent session of `projectRoot`.
  */
-function harvestRichProjectContext(projectRoot, home, git, projectSessions = null) {
+export function harvestRichProjectContext(projectRoot, home, git, projectSessions = null) {
   const sessions = projectSessions || discoverProjectSessions(projectRoot, home, git);
   let chosen = null;
   if (selectedSourceSessionId) {
@@ -1215,8 +1252,9 @@ function harvestRichProjectContext(projectRoot, home, git, projectSessions = nul
     'REQUIREMENTS.md',
     'SECURITY.md',
   ]);
-  const addCandidate = (rel, isTouched) => {
-    if (!rel || skipDocsAndMeta.has(rel) || rel.startsWith('.vicem') || rel.startsWith('docs/')) return;
+  const addCandidate = (rel, isTouched, depth = 0) => {
+    if (!rel || depth > 3 || skipDocsAndMeta.has(rel) || rel.startsWith('.vicem') || rel.startsWith('docs/')) return;
+    if (NoiseGate.isIgnored(rel)) return;
     if (/\.(png|jpg|jpeg|gif|webp|svg|ico|pdf|zip|db|sqlite)$/i.test(rel)) return;
     const full = path.join(projectRoot, rel);
     try {
@@ -1227,16 +1265,16 @@ function harvestRichProjectContext(projectRoot, home, git, projectSessions = nul
         if (!candidateMap.has(rel) || candidateMap.get(rel) < score) {
           candidateMap.set(rel, score);
         }
-      } else if (st.isDirectory()) {
-        for (const sub of fs.readdirSync(full)) {
-          addCandidate(path.join(rel, sub).replace(/\\/g, '/'), isTouched);
+      } else if (st.isDirectory() && depth < 3) {
+        for (const sub of fs.readdirSync(full).slice(0, 40)) {
+          addCandidate(path.join(rel, sub).replace(/\\/g, '/'), isTouched, depth + 1);
         }
       }
     } catch {}
   };
 
-  for (const f of touchedFiles) addCandidate(f, true);
-  for (const f of [...(git.modifiedFiles || []), ...(git.untrackedFiles || [])]) addCandidate(f, false);
+  for (const f of touchedFiles) addCandidate(f, true, 0);
+  for (const f of [...(git.modifiedFiles || []), ...(git.untrackedFiles || [])]) addCandidate(f, false, 0);
 
   const activeFileList = [...candidateMap.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -1255,7 +1293,7 @@ function harvestRichProjectContext(projectRoot, home, git, projectSessions = nul
   };
 }
 
-async function collectState() {
+export async function collectState() {
   const home = os.homedir();
   if (!cachedTelemetry || Date.now() - cachedTelemetryAt > 2500) {
     cachedTelemetry = collectRealAgentTelemetry(home);
@@ -1286,24 +1324,19 @@ async function collectState() {
     customGoalOverride ||
     substantiveUsers[substantiveUsers.length - 1] ||
     rich.recentUsers[rich.recentUsers.length - 1] ||
-    (projectRoot === DEFAULT_PROJECT_ROOT && tel.antigravity.lastPrompt
-      ? tel.antigravity.lastPrompt
-      : '') ||
-    tel.claude.lastPrompt ||
-    tel.codex.lastPrompt ||
     `Active branch '${git.branch || 'main'}' (${git.headShort || 'HEAD'})`;
 
   const doneList = [];
   if (rich.recentUsers.length > 1) {
     for (const u of rich.recentUsers.slice(0, -1)) {
-      doneList.push(`User request handled: "${u}"`);
+      doneList.push(`Previous request (completion unverified): "${u}"`);
     }
   }
   for (const a of rich.recentAssistant) {
-    doneList.push(`Agent summary: ${a}`);
+    doneList.push(`Agent report (unverified): ${a}`);
   }
   for (const f of rich.activeFileList) {
-    doneList.push(`Active file modified/created in session: \`${f}\``);
+    doneList.push(`Session file reference: \`${f}\``);
   }
   for (const c of (git.recentCommits || []).slice(0, 3)) {
     doneList.push(`Git commit: ${c}`);
@@ -1683,7 +1716,7 @@ async function launchTargetAgentCrossPlatform(targetId, projectRoot, batonMarkdo
   const binPath = resolveAgentBinary(targetId, home);
   if (!binPath) {
     return {
-      ok: true,
+      ok: false,
       method: 'Rule Mount + Clipboard (CLI binary not installed)',
       detail: `${targetId} CLI not installed locally; Baton mounted & copied to clipboard`,
     };
@@ -1764,7 +1797,7 @@ async function launchTargetAgentCrossPlatform(targetId, projectRoot, batonMarkdo
     }
     if (!launched) {
       return {
-        ok: true,
+        ok: false,
         method: 'Clipboard + Rule Mount',
         detail: `Prepared ${shortenHome(launcherScriptPath, home)} (run in terminal)`,
       };
@@ -1776,13 +1809,14 @@ async function launchTargetAgentCrossPlatform(targetId, projectRoot, batonMarkdo
   if (status.state === 'started' && status.alive) {
     return { ok: true, method: `Terminal (${name})`, detail: `${name} running in Terminal (pid ${status.pid})` };
   }
-  return { ok: true, method: `Terminal (${name})`, detail: `Opened Terminal launcher for ${name}` };
+  return { ok: false, method: `Terminal (${name})`, detail: `Launcher opened but running agent could not be verified. Check the terminal and retry.` };
 }
 
 /**
  * Performs a REAL handoff and records a 5-step verified receipt so the user can see concrete proof.
  */
-async function executeRealHandoff(targetId, launchMode = 'app') {
+export async function executeRealHandoff(targetId, launchMode = 'app', options = {}) {
+  if (!['app', 'cli', 'off'].includes(launchMode)) throw new Error('Invalid launch mode');
   const home = os.homedir();
   const state = await collectState();
   const projectRoot = state.projectRoot;
@@ -1798,23 +1832,24 @@ async function executeRealHandoff(targetId, launchMode = 'app') {
   const doneList = [];
   if (rich.recentUsers.length > 1) {
     for (const u of rich.recentUsers.slice(0, -1)) {
-      doneList.push(`User request handled: "${u}"`);
+      doneList.push(`Previous request (completion unverified): "${u}"`);
     }
   }
   for (const a of rich.recentAssistant) {
-    doneList.push(`Agent summary: ${a}`);
+    doneList.push(`Agent report (unverified): ${a}`);
   }
   for (const f of rich.activeFileList) {
-    doneList.push(`Active file modified/created in session: \`${f}\``);
+    doneList.push(`Session file reference: \`${f}\``);
   }
   for (const c of (git.recentCommits || []).slice(0, 3)) {
     doneList.push(`Git commit: ${c}`);
   }
 
+  const substantiveGoal = customGoalOverride || [...rich.recentUsers].reverse().find(text => !/handoff|핸드오프|인계|세션.*넘겨/i.test(text)) || 'Review project state and identify the next unfinished task';
   const task = {
-    goal: state.taskTitle,
+    goal: /handoff|핸드오프|인계/i.test(state.taskTitle) ? substantiveGoal : state.taskTitle,
     immediateNext: [
-      `Fulfill latest request in ${state.project} (${state.branch}): "${state.taskTitle}"`,
+      `Fulfill latest request in ${state.project} (${state.branch}): "${substantiveGoal}"`,
       ...(rich.activeFileList.length > 0
         ? [`Inspect and continue working on active session files: ${rich.activeFileList.map((f) => `\`${f}\``).join(', ')}`]
         : []),
@@ -1824,15 +1859,21 @@ async function executeRealHandoff(targetId, launchMode = 'app') {
   };
 
   // Step 1 & 2 & 3: Build Baton & write `.vicem/BATON.md` + `.vicem/ledger.json`
-  const baton = BatonIaBuilder.build({
+  const buildOptions = {
     projectRoot,
     sourceAgent,
     targetAgent: targetId,
     sessionId: rich.sessionId,
     taskContext: task,
     gitContext: effectiveGit,
-    budgetTokens: 4000,
-  });
+    budgetTokens: options.budgetTokens ?? 4000,
+    persist: false,
+  };
+  let baton = HandoffService.prepare(buildOptions);
+  const previewToken = crypto.createHash('sha256').update(baton.markdown + launchMode).digest('hex');
+  if (options.preview) return { status: 'preview', previewToken, markdown: baton.markdown, id: baton.id, goal: task.goal, next: task.immediateNext, receptionConfirmed: false };
+  if (options.previewToken && options.previewToken !== previewToken) { const error = new Error('Project or conversation changed. Review the updated handoff before sending.'); error.statusCode = 409; throw error; }
+  baton = HandoffService.prepare({ ...buildOptions, persist: true });
   const skelSaved = collectLiveSkeletonLedger(projectRoot, rich.activeFileList, true);
 
   const batonFilePath = path.join(projectRoot, '.vicem', 'BATON.md');
@@ -1841,20 +1882,15 @@ async function executeRealHandoff(targetId, launchMode = 'app') {
   // Step 4A: Mount target rule file (`CLAUDE.md` / `AGENTS.md` / `.cursorrules` / `.windsurfrules` / `.clinerules` / `GEMINI.md` / `.github/copilot-instructions.md`)
   let mountedRel = '.vicem/BATON.md';
   let mountVerified = false;
+  let mountError = null;
   try {
-    const mountRes = RuleMountAdapter.mount(projectRoot, targetId, baton.markdown);
+    const mountRes = HandoffService.mount(projectRoot, targetId, baton);
     mountedRel = mountRes.relPath;
-    if (targetId === 'claude') {
-      const claudeMdPath = path.join(projectRoot, 'CLAUDE.md');
-      const block = `<!-- VICEM-BATON-START -->\n${baton.markdown.trim()}\n<!-- VICEM-BATON-END -->\n`;
-      fs.writeFileSync(claudeMdPath, block, 'utf8');
-      mountedRel = 'CLAUDE.md + AGENTS.md';
-    }
     const checkPath = path.join(projectRoot, mountRes.relPath);
     mountVerified =
       fs.existsSync(checkPath) &&
       fs.readFileSync(checkPath, 'utf8').includes('<!-- VICEM-BATON-START -->');
-  } catch {}
+  } catch (error) { mountError = error.message; }
 
   // Step 4B: Copy to OS Clipboard (`pbcopy` / `Set-Clipboard` / `wl-copy` / `xclip`) and verify
   ClipboardAdapter.copyNative(baton.markdown);
@@ -1873,10 +1909,11 @@ async function executeRealHandoff(targetId, launchMode = 'app') {
     detail: 'Clipboard + Rule mount only',
   };
   if (launchMode && launchMode !== 'off') {
-    launchResult = await launchTargetAgentCrossPlatform(targetId, projectRoot, baton.markdown, launchMode);
+    try { launchResult = await (options.launcher || launchTargetAgentCrossPlatform)(targetId, projectRoot, baton.markdown, launchMode); }
+    catch (error) { launchResult = { ok: false, method: 'Launch failed', detail: error.message }; }
   }
 
-  if (launchResult.ok && targetId && targetId !== sourceAgent) {
+  if (launchMode !== 'off' && mountVerified && launchResult.ok && targetId && targetId !== sourceAgent) {
     lastHandedOffFrom = sourceAgent;
     manualActiveAgent = targetId;
   }
@@ -1906,7 +1943,7 @@ async function executeRealHandoff(targetId, launchMode = 'app') {
       {
         ok: mountVerified && clipboardChars > 0,
         title: 'Mount Rules & Verify Clipboard',
-        detail: `Mounted ${mountedRel} · Clipboard verified (${clipboardChars.toLocaleString()} chars)`,
+        detail: mountError || `Mounted ${mountedRel} · Clipboard verified (${clipboardChars.toLocaleString()} chars)`,
       },
       {
         ok: launchResult.ok,
@@ -1917,16 +1954,23 @@ async function executeRealHandoff(targetId, launchMode = 'app') {
     batonPreview: baton.markdown,
   };
 
+  HandoffService.record(projectRoot, baton, mountVerified && launchResult.ok ? 'delivered' : 'partial', launchResult.detail);
   cachedTelemetryAt = 0;
   const updated = await collectState();
   return {
     ...updated,
-    actionReceipt: `${nowStr} · Relayed ${sourceAgent} -> ${targetId} (${launchResult.detail})`,
+    manualContinuation: HandoffService.manualGuide(projectRoot, targetId),
+    support: HandoffService.supportInfo(),
+    launchSucceeded: launchMode !== 'off' && launchResult.ok,
+    handoffId: baton.id,
+    handoffStatus: mountVerified && launchResult.ok ? 'delivered' : 'partial',
+    receptionConfirmed: false,
+    actionReceipt: `${nowStr} · ${mountVerified && launchResult.ok ? 'Delivered' : 'Partially delivered'} ${sourceAgent} -> ${targetId}; reception unconfirmed (${launchResult.detail})`,
   };
 }
 
-const HTML_PAGE = `<!DOCTYPE html>
-<html lang="en" data-theme="dark">
+export const HTML_PAGE = `<!DOCTYPE html>
+<html lang="en" data-theme="dark" class="simple-view">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -2892,6 +2936,26 @@ const HTML_PAGE = `<!DOCTYPE html>
     display: flex;
   }
 
+  .workbench-drawer.anatomy-open {
+    max-height: 278px;
+  }
+
+  .wb-anatomy-box {
+    padding: 0;
+    overflow: hidden;
+    height: 214px;
+    max-height: 214px;
+    position: relative;
+  }
+
+  .wb-anatomy-frame {
+    width: 100%;
+    height: 214px;
+    border: none;
+    display: block;
+    background: transparent;
+  }
+
   .wb-header {
     display: flex;
     align-items: center;
@@ -2928,6 +2992,14 @@ const HTML_PAGE = `<!DOCTYPE html>
     max-height: 155px;
     overflow-y: auto;
     transition: border-color 220ms ease;
+  }
+
+  .wb-box.wb-anatomy-box {
+    padding: 0;
+    overflow: hidden;
+    height: 214px;
+    max-height: 214px;
+    position: relative;
   }
 
   @keyframes codeUnfoldReveal {
@@ -3445,11 +3517,62 @@ const HTML_PAGE = `<!DOCTYPE html>
     .col-quota { width: 34%; }
     .col-act   { width: 22%; }
   }
+
+  .simple-view .pipeline-bar, .simple-view .table-toolbar, .simple-view .table-viewport,
+  .simple-view .combo-pill, .simple-view .diet-meter-hud, .simple-view .footer-cmds, .simple-view .workbench-drawer { display:none; }
+  .continue-card { margin:20px 24px; padding:24px; border:1px solid var(--border); border-radius:16px; }
+  .continue-card h1 { font-size:24px; margin-bottom:8px; }
+  .continue-card p { color:var(--text-muted); margin:10px 0 20px; }
+  .continue-card select, .continue-card button { padding:12px 16px; border-radius:8px; }
+  .continue-card button:focus-visible, dialog button:focus-visible { outline:3px solid #6d9eff; outline-offset:3px; }
+  #simple-result { white-space:pre-wrap; margin-top:16px; line-height:1.6; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } }
+
+  body { display:block; padding:36px 24px; background:var(--canvas); font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  .app-window { width:100%; max-width:1040px; max-height:none; min-height:0; height:auto; margin:auto; border-radius:20px; overflow:visible; box-shadow:0 24px 80px #0002; }
+  .app-window > * { flex-shrink:0; }
+  .win-topbar { border-radius:20px 20px 0 0; padding:18px 28px; height:auto; min-height:72px; }
+  .simple-view .ws-switcher-bar { max-width:300px; }
+  .product-intro { padding:46px 40px 30px; }
+  .eyebrow { font-size:11px; letter-spacing:.12em; color:var(--accent); font-weight:700; }
+  .product-intro h1 { font-size:34px; letter-spacing:-1.2px; line-height:1.35; margin:12px 0; }
+  .product-intro p { color:var(--text-secondary); font-size:15px; line-height:1.8; }
+  .journey { display:flex; gap:28px; margin-top:28px; font-size:12px; color:var(--text-secondary); }
+  .journey b { display:inline-grid; place-items:center; width:24px; height:24px; border-radius:50%; border:1px solid var(--border-mid); margin-right:6px; font-size:11px; }
+  .session-deck { margin:0 40px; padding:24px; border:1px solid var(--border-mid); border-radius:14px; background:var(--win-card); }
+  .simple-view .relay-route-pill { display:none; }
+  .simple-view .session-strip-header { flex-wrap:wrap; gap:10px; }
+  .session-cards { margin:16px 0; }
+  .prompt-input { min-height:44px; font-size:14px; }
+  .continue-card { margin:20px 40px; padding:28px; border:1px solid var(--border-mid); border-radius:14px; background:var(--win-card); }
+  .continue-card h2 { font-size:23px; margin-top:10px; letter-spacing:-.5px; }
+  .continue-card p { color:var(--text-secondary); font-size:14px; line-height:1.7; margin:8px 0 24px; }
+  .continue-card label { display:block; color:var(--text-secondary); font-size:12px; margin-bottom:8px; }
+  .continue-card select { min-width:240px; color:var(--text-primary); background:var(--win-bg); border:1px solid var(--border-strong); font:inherit; font-size:14px; margin-right:10px; }
+  button { cursor:pointer; }
+  .continue-card button, #handoff-review button { border:1px solid var(--border-mid); color:var(--text-primary); background:var(--win-elevated); font:inherit; font-size:13px; font-weight:600; padding:12px 18px; border-radius:8px; }
+  #simple-start, #handoff-review #handoff-confirm { background:var(--accent); border-color:var(--accent); color:#062b20; }
+  #simple-start:hover, #handoff-confirm:hover { filter:brightness(1.12); }
+  button:disabled { opacity:.45; cursor:wait; }
+  #simple-result { color:var(--text-secondary); font-size:12px; border-top:1px solid var(--border-subtle); padding-top:18px; margin-top:24px; }
+  .app-window > details { margin:20px 40px 32px !important; color:var(--text-secondary); font-size:12px; line-height:1.8; }
+  details summary { cursor:pointer; padding:8px 0; }
+  #handoff-review { margin:auto; color:var(--text-primary); background:var(--win-bg); border:1px solid var(--border-strong); box-shadow:0 30px 100px #0008; padding:32px !important; }
+  #handoff-review::backdrop { background:#050b14b3; backdrop-filter:blur(5px); }
+  #handoff-review h2 { font-size:24px; letter-spacing:-.5px; margin-bottom:12px; }
+  #handoff-review p { color:var(--text-secondary); font-size:13px; line-height:1.7; }
+  #handoff-review-summary { background:var(--win-card); border:1px solid var(--border-subtle); border-radius:10px; padding:20px; line-height:1.8; font-size:14px; }
+  #handoff-review details { margin:20px 0; color:var(--text-secondary); font-size:12px; }
+  #handoff-review pre { font-size:11px; padding:16px; background:var(--win-card); border-radius:8px; }
+  .win-footer { border-radius:0 0 20px 20px; min-height:48px; }
+  @media(max-width:680px) { body{padding:12px} .product-intro{padding:28px 22px}.product-intro h1{font-size:27px}.session-deck,.continue-card{margin:16px;padding:20px}.journey{gap:12px;font-size:10px}.continue-card select{width:100%;margin-bottom:12px}.win-topbar{padding:14px}.simple-view .ws-switcher-bar{display:none}.app-window>details{margin:16px !important} }
+
 </style>
 </head>
 <body>
 
   <div class="app-window">
+
 
     <!-- 1. Topbar: Project Switcher + Add Project Popover + Live Kinetic Compression Telemetry -->
     <header class="win-topbar">
@@ -3459,7 +3582,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         </div>
         <div class="brand-name-wrap">
           <span class="brand-name">Vicem</span>
-          <span class="brand-ver">v1.1</span>
+          <span class="brand-ver">v1.1.2</span>
         </div>
         <div class="ws-switcher-bar" id="ws-tabs"></div>
         <button class="add-ws-btn" id="btn-add-ws" onclick="toggleAddWorkspacePopover(event)" title="Open or add any project directory">
@@ -3506,13 +3629,14 @@ const HTML_PAGE = `<!DOCTYPE html>
       </div>
     </header>
 
+    <section class="product-intro"><span class="eyebrow">WORK CONTINUES HERE</span><h1>Pick up where you left off.</h1><p>Choose your conversation, review the handoff, and continue in your next tool.</p><div class="journey"><span><b>1</b> Review your work</span><span><b>2</b> Choose a destination</span><span><b>3</b> Review and hand off</span></div></section>
     <!-- 2. Project Sessions Strip (Explicit Source Selection) & Goal Bar -->
     <section class="session-deck crossfade-surface" id="session-deck">
       <div class="session-strip-header">
         <div class="session-strip-label">
-          <span>Project Sessions in</span>
+          <span>01 · Source conversation</span>
           <span class="project-path-pill" id="active-project-pill">~/workspace</span>
-          <span id="session-count-label">· Click any session to lock as Source Baton</span>
+          <span id="session-count-label">· Select the conversation to continue</span>
         </div>
         <div class="session-strip-label">
           <span id="mounted-status">No rules mounted</span>
@@ -3523,7 +3647,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
       <div class="goal-route-row">
         <div class="prompt-input-wrap">
-          <span class="prompt-prefix">GOAL &gt;</span>
+          <span class="prompt-prefix">Goal</span>
           <input
             type="text"
             class="prompt-input"
@@ -3544,6 +3668,37 @@ const HTML_PAGE = `<!DOCTYPE html>
       </div>
     </section>
 
+
+    <section class="continue-card" aria-labelledby="continue-title">
+      <span class="eyebrow">02 · Choose a destination</span><h2 id="continue-title">Where would you like to continue?</h2>
+      <p>Review the goal and next steps before anything is delivered.</p>
+      <label for="simple-target">Destination</label>
+      <select id="simple-target" aria-label="Target agent"></select>
+      <label for="simple-launch" style="margin-top:16px">After delivery</label><select id="simple-launch" onchange="launchMode=this.value"><option value="app">Open the app</option><option value="cli">Open in terminal</option><option value="off">Prepare handoff only</option></select><button id="simple-start" onclick="startSimpleHandoff()">Review handoff <span aria-hidden="true">→</span></button>
+      <button onclick="document.documentElement.classList.toggle('simple-view')">Technical details</button>
+      <div id="platform-support" role="note" style="margin-top:16px;color:var(--text-secondary);font-size:12px"></div><div id="simple-result" role="status" aria-live="polite">Nothing has been delivered yet. Review the handoff before continuing.</div>
+    </section>
+    <section id="manual-continuation" class="continue-card" hidden aria-labelledby="manual-title">
+      <span class="eyebrow">CONTINUE MANUALLY</span><h2 id="manual-title">Your handoff is saved.</h2>
+      <p id="manual-instructions"></p>
+      <label for="manual-command">Command · <span id="manual-shell"></span></label>
+      <textarea id="manual-command" readonly rows="3" style="width:100%;padding:12px;background:var(--win-bg);color:var(--text-primary);border:1px solid var(--border-mid);border-radius:8px"></textarea>
+      <button onclick="copyManualField('manual-command')">Copy command</button>
+      <label for="manual-prompt" style="margin-top:16px">Start prompt</label>
+      <textarea id="manual-prompt" readonly rows="3" style="width:100%;padding:12px;background:var(--win-bg);color:var(--text-primary);border:1px solid var(--border-mid);border-radius:8px"></textarea>
+      <button onclick="copyManualField('manual-prompt')">Copy start prompt</button>
+      <p id="manual-location" style="overflow-wrap:anywhere"></p>
+      <div id="manual-copy-status" role="status" aria-live="polite"></div>
+    </section>
+    <details style="margin:12px 24px"><summary>Advanced · compression and history</summary>
+      <label for="handoff-budget">Target token budget</label>
+      <select id="handoff-budget"><option value="2000">Compact · 2,000</option><option value="4000" selected>Balanced · 4,000</option><option value="8000">Detailed · 8,000</option></select>
+      <p>Budgets are targets; inspect the preview before delivery.</p>
+      <button onclick="showHandoffHistory()">Handoff history</button>
+      <button onclick="removeHandoffRules()">Remove temporary handoff instructions</button>
+      <label for="undo-id">Handoff ID to undo</label><input id="undo-id" placeholder="baton-…"><button onclick="undoById()">Undo instruction changes</button>
+      <pre id="handoff-history" style="white-space:pre-wrap" aria-live="polite"></pre>
+    </details>
     <!-- 3. Live 4-Node Core Pipeline Stepper (With Sliding Layout-Projection Glider) -->
     <section class="pipeline-bar" id="pipeline-bar">
       <div class="pipe-glider" id="pipe-glider"></div>
@@ -3586,6 +3741,10 @@ const HTML_PAGE = `<!DOCTYPE html>
       <div class="wb-header">
         <span class="wb-title" id="wb-title">Pipeline Inspector</span>
         <div class="wb-actions">
+          <button class="cmd-btn" id="btn-wb-anatomy" style="height:24px" onclick="toggleAnatomyRig()" title="Toggle Interactive 3D Baton Relay Rig (M)">
+            <span>3D Relay Rig</span>
+            <span class="kbd">M</span>
+          </button>
           <button class="cmd-btn active-toggle" style="height:24px" onclick="syncDietToDisk()">
             <span>Sync Diet to Disk</span>
           </button>
@@ -3658,6 +3817,13 @@ const HTML_PAGE = `<!DOCTYPE html>
 
   </div>
 
+<dialog id="handoff-review" aria-labelledby="handoff-review-title" style="width:min(800px,90vw);max-height:85vh;padding:24px;border-radius:16px">
+  <h2 id="handoff-review-title">Review handoff</h2>
+  <p>Check the goal and next steps. Delivery does not confirm that the destination has read them.</p>
+  <div id="handoff-review-summary" style="white-space:pre-wrap;margin:16px 0"></div><details><summary>View full handoff</summary><pre id="handoff-review-text" style="white-space:pre-wrap;max-height:45vh;overflow:auto"></pre></details>
+  <button onclick="document.getElementById('handoff-review').close()">Back</button>
+  <button id="handoff-confirm" onclick="confirmHandoff()">Confirm and deliver</button>
+</dialog>
 <script>
   const CLIENT_GUI_VERSION = 'v18';
   const urlParams = new URLSearchParams(window.location.search);
@@ -3666,12 +3832,15 @@ const HTML_PAGE = `<!DOCTYPE html>
     document.documentElement.classList.add('no-anim');
   }
 
+  fetch('/api/support').then(res => { if (!res.ok) throw new Error('Support information unavailable'); return res.json(); }).then(info => { document.getElementById('platform-support').textContent = info.label + ' · ' + info.cli + ' ' + info.desktop; }).catch(() => { document.getElementById('platform-support').textContent = 'Support status unavailable. Desktop auto-launch is not guaranteed; manual continuation is available.'; });
   let state = null;
   let currentTheme = localStorage.getItem('vicem-theme') || 'dark';
   let launchMode = 'app';
   let agentFilter = urlParams.get('all') === '1' ? 'all' : 'installed';
   let activeWorkbenchTab = 'skeleton';
-  let workbenchOpen = true;
+  let workbenchOpen = false;
+  let anatomyRigOpen = false;
+  let anatomyStationIdx = 2;
   let isEditingGoal = false;
   let relayingTargetId = null;
   let rehydratedPreview = null;
@@ -3689,6 +3858,18 @@ const HTML_PAGE = `<!DOCTYPE html>
       .replaceAll("'", '&#39;');
   }
 
+  function escapeJsAttr(str) {
+    return String(str || '')
+      .replaceAll('\\\\', '\\\\\\\\')
+      .replaceAll("'", "\\\\'")
+      .replaceAll('"', '&quot;')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('\\n', '\\\\n')
+      .replaceAll('\\r', '\\\\r');
+  }
+
   function applyTheme(theme) {
     currentTheme = theme;
     document.documentElement.setAttribute('data-theme', theme);
@@ -3697,6 +3878,10 @@ const HTML_PAGE = `<!DOCTYPE html>
     if (logoImg) logoImg.src = theme === 'light' ? '/logo-light.png' : '/logo-dark.png';
     document.getElementById('theme-icon').textContent = theme === 'light' ? '☾' : '☀';
     document.getElementById('theme-label').textContent = theme === 'light' ? 'Dark' : 'Light';
+    const anatomyFrame = document.getElementById('anatomy-iframe');
+    if (anatomyFrame) {
+      anatomyFrame.src = '/anatomy?embed=1&theme=' + encodeURIComponent(theme);
+    }
   }
 
   function toggleTheme() {
@@ -3894,6 +4079,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   }
 
   async function switchWorkspace(projectRoot) {
+    showManualContinuation(null);
     closeAddWorkspacePopover();
     setStatus('Switching project context...');
     rehydratedPreview = null;
@@ -3970,12 +4156,77 @@ const HTML_PAGE = `<!DOCTYPE html>
     setStatus('Updated rule mount for ' + relPath);
   }
 
+  function buildAnatomyTokensPayload() {
+    if (!state || !state.stats) return null;
+    const raw = Math.max(1000, state.stats.rawTokens || 42800);
+    const diet = Math.max(200, state.stats.dietTokens || 1920);
+    const s1 = Math.round(raw * 0.34);
+    const s2 = Math.round(diet * 2.1);
+    const s3 = Math.round(diet * 1.25);
+    const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 1 : 2) + 'k' : String(n));
+    const pct = (n) => '-' + Math.max(1, Math.min(99, Math.round((1 - n / raw) * 100))) + '%';
+    return [
+      { tokens: fmt(raw), saving: 'raw' },
+      { tokens: fmt(s1), saving: pct(s1) },
+      { tokens: fmt(s2), saving: pct(s2) },
+      { tokens: fmt(s3), saving: pct(s3) },
+      { tokens: fmt(diet), saving: '-' + (state.stats.savedPct || 95) + '%' },
+    ];
+  }
+
+  function postToAnatomyRig(stationIdx) {
+    if (typeof stationIdx === 'number') anatomyStationIdx = stationIdx;
+    const frame = document.getElementById('anatomy-iframe');
+    if (frame && frame.contentWindow) {
+      frame.contentWindow.postMessage(
+        {
+          station: anatomyStationIdx,
+          tokens: buildAnatomyTokensPayload(),
+        },
+        '*'
+      );
+    }
+  }
+
+  function driveAnatomyStation(idx) {
+    anatomyStationIdx = idx;
+    postToAnatomyRig(idx);
+    renderWorkbench();
+  }
+
+  function toggleAnatomyRig() {
+    if (!workbenchOpen) {
+      workbenchOpen = true;
+      anatomyRigOpen = true;
+    } else {
+      anatomyRigOpen = !anatomyRigOpen;
+    }
+    const stageMap = { harvest: 1, skeleton: 2, ledger: 3, receipt: 4 };
+    anatomyStationIdx = stageMap[activeWorkbenchTab] || 2;
+    triggerCrossfade('workbench-drawer');
+    render();
+    setStatus(
+      anatomyRigOpen
+        ? 'Opened 3D Isometric Baton Relay Rig · Hover or click S0–S4 to drive the context mill'
+        : 'Returned to standard Pipeline Inspector view'
+    );
+  }
+
   function selectWorkbenchTab(tabName) {
+    const stageMap = { harvest: 1, skeleton: 2, ledger: 3, receipt: 4 };
+    if (anatomyRigOpen && workbenchOpen) {
+      activeWorkbenchTab = tabName;
+      anatomyStationIdx = stageMap[tabName] || 2;
+      postToAnatomyRig(anatomyStationIdx);
+      render();
+      return;
+    }
     if (workbenchOpen && activeWorkbenchTab === tabName) {
       workbenchOpen = false;
     } else {
       workbenchOpen = true;
       activeWorkbenchTab = tabName;
+      anatomyStationIdx = stageMap[tabName] || 2;
       triggerCrossfade('workbench-drawer');
     }
     render();
@@ -4067,17 +4318,21 @@ const HTML_PAGE = `<!DOCTYPE html>
     const titleEl = document.getElementById('wb-title');
     const bodyEl = document.getElementById('wb-body');
     const inspectBtn = document.getElementById('btn-inspect');
+    const anatomyBtn = document.getElementById('btn-wb-anatomy');
 
     if (!state || !workbenchOpen) {
-      drawer.classList.remove('open');
+      drawer.classList.remove('open', 'anatomy-open');
       if (inspectBtn) inspectBtn.classList.remove('active-toggle');
+      if (anatomyBtn) anatomyBtn.classList.remove('active-toggle');
       ['1', '2', '3', '4'].forEach((n) => document.getElementById('pipe-node-' + n)?.classList.remove('active-tab'));
       positionGliders();
       return;
     }
 
     drawer.classList.add('open');
+    drawer.classList.toggle('anatomy-open', anatomyRigOpen);
     if (inspectBtn) inspectBtn.classList.add('active-toggle');
+    if (anatomyBtn) anatomyBtn.classList.toggle('active-toggle', anatomyRigOpen);
 
     const tabIndexMap = { harvest: '1', skeleton: '2', ledger: '3', receipt: '4' };
     ['1', '2', '3', '4'].forEach((n) => {
@@ -4087,6 +4342,88 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     const sk = state.skeletonSummary || { files: [], totalSymbols: 0 };
     const selectedSess = (state.projectSessions || []).find((s) => s.isSelected) || (state.projectSessions || [])[0];
+
+    if (anatomyRigOpen) {
+      titleEl.textContent =
+        'Interactive 3D Baton Relay Line · Progressive Context Mill (' +
+        state.stats.rawTokens.toLocaleString() +
+        ' -> ' +
+        state.stats.dietTokens.toLocaleString() +
+        ' tok · -' +
+        state.stats.savedPct +
+        '%)';
+      const tokList = buildAnatomyTokensPayload() || [
+        { tokens: '42.8k', saving: 'raw' },
+        { tokens: '14.6k', saving: '-65.9%' },
+        { tokens: '4.85k', saving: '-88.7%' },
+        { tokens: '2.64k', saving: '-93.8%' },
+        { tokens: '1.92k', saving: '-95.5%' },
+      ];
+      const stationSpecs = [
+        { idx: 0, code: 'S0 Feed', desc: 'Source Agent Raw Context Ingot (' + escapeHtml(selectedSess?.agentName || state.workingAgentId) + ')' },
+        { idx: 1, code: 'S1 NoiseGate', desc: 'Shears lockfiles, build artifacts & binary blobs' },
+        { idx: 2, code: 'S2 AST Press', desc: 'Stamps function bodies >=12 lines into .vicem/ledger.json (' + sk.totalSymbols + ' symbols)' },
+        { idx: 3, code: 'S3 Slim Gauge', desc: 'Compresses repetitive logs & JSON arrays via Micrometer Comparator' },
+        { idx: 4, code: 'S4 Relay Dock', desc: 'Docks compacted Baton into Target Agent Receiver Terminal' },
+      ];
+      const pillsHtml = stationSpecs
+        .map(
+          (st) =>
+            '<button class="rule-chip' +
+            (anatomyStationIdx === st.idx ? ' mounted' : '') +
+            '" onclick="driveAnatomyStation(' +
+            st.idx +
+            ')">' +
+            '<strong>' +
+            escapeHtml(st.code) +
+            '</strong>' +
+            '<span style="color:var(--text-muted)">' +
+            escapeHtml(tokList[st.idx].tokens) +
+            '</span>' +
+            '</button>'
+        )
+        .join('');
+      const curSpec = stationSpecs[anatomyStationIdx] || stationSpecs[2];
+      const curTok = tokList[anatomyStationIdx] || tokList[2];
+
+      const existingFrame = document.getElementById('anatomy-iframe');
+      if (existingFrame && bodyEl.querySelector('#anatomy-right-panel')) {
+        const rightPanel = bodyEl.querySelector('#anatomy-right-panel');
+        rightPanel.innerHTML =
+          '<div class="wb-box-title" style="display:flex;justify-content:space-between;align-items:center">' +
+            '<span>Select Transfer Station (or hover 3D rig on left)</span>' +
+            '<a href="/anatomy?theme=' + encodeURIComponent(currentTheme) + '" target="_blank" style="color:var(--accent);text-decoration:none">Full Figure ↗</a>' +
+          '</div>' +
+          '<div class="rule-chip-list" style="margin-bottom:8px">' + pillsHtml + '</div>' +
+          '<div class="prompt-list-item"><strong>' + escapeHtml(curSpec.code) + ' · ' + escapeHtml(curTok.tokens) + ' tok (' + escapeHtml(curTok.saving) + ')</strong></div>' +
+          '<div class="prompt-list-item">' + escapeHtml(curSpec.desc) + '</div>' +
+          '<div class="prompt-list-item" style="color:var(--text-muted)">Click pipeline nodes 1–4 above or Hand off -> below to watch the Baton travel along the mill.</div>';
+        postToAnatomyRig(anatomyStationIdx);
+        return;
+      }
+
+      bodyEl.innerHTML =
+        '<div class="wb-grid-2" style="grid-template-columns: 1.35fr 1fr">' +
+          '<div class="wb-box wb-anatomy-box">' +
+            '<iframe id="anatomy-iframe" class="wb-anatomy-frame" src="/anatomy?embed=1&theme=' + encodeURIComponent(currentTheme) + '"></iframe>' +
+          '</div>' +
+          '<div class="wb-box" id="anatomy-right-panel" style="max-height:214px">' +
+            '<div class="wb-box-title" style="display:flex;justify-content:space-between;align-items:center">' +
+              '<span>Select Transfer Station (or hover 3D rig on left)</span>' +
+              '<a href="/anatomy?theme=' + encodeURIComponent(currentTheme) + '" target="_blank" style="color:var(--accent);text-decoration:none">Full Figure ↗</a>' +
+            '</div>' +
+            '<div class="rule-chip-list" style="margin-bottom:8px">' + pillsHtml + '</div>' +
+            '<div class="prompt-list-item"><strong>' + escapeHtml(curSpec.code) + ' · ' + escapeHtml(curTok.tokens) + ' tok (' + escapeHtml(curTok.saving) + ')</strong></div>' +
+            '<div class="prompt-list-item">' + escapeHtml(curSpec.desc) + '</div>' +
+            '<div class="prompt-list-item" style="color:var(--text-muted)">Click pipeline nodes 1–4 above or Hand off -> below to watch the Baton travel along the mill.</div>' +
+          '</div>' +
+        '</div>';
+      const newFrame = document.getElementById('anatomy-iframe');
+      if (newFrame) {
+        newFrame.addEventListener('load', () => postToAnatomyRig(anatomyStationIdx));
+      }
+      return;
+    }
 
     if (activeWorkbenchTab === 'harvest') {
       titleEl.textContent = 'Stage 1 · Harvested Session Timeline & Active Git Tree (' + state.project + ')';
@@ -4131,9 +4468,9 @@ const HTML_PAGE = `<!DOCTYPE html>
                 '<div class="symbol-row' +
                 (rehydratedPreview && rehydratedPreview.symbolName === s.symbolName ? ' active-sym' : '') +
                 '" onclick="testRehydrateSymbol(\\'' +
-                escapeHtml(s.filePath) +
+                escapeJsAttr(s.filePath) +
                 '\\', \\'' +
-                escapeHtml(s.symbolName) +
+                escapeJsAttr(s.symbolName) +
                 '\\')">' +
                 '<span><strong>' +
                 escapeHtml(s.symbolName) +
@@ -4179,7 +4516,7 @@ const HTML_PAGE = `<!DOCTYPE html>
             '<button class="rule-chip' +
             (r.mounted ? ' mounted' : '') +
             '" onclick="toggleRuleMount(\\'' +
-            escapeHtml(r.rel) +
+            escapeJsAttr(r.rel) +
             '\\')">' +
             '<span>' +
             (r.mounted ? '● Mounted:' : '○ Mount:') +
@@ -4263,7 +4600,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         .map(
           (ws) =>
             '<button class="ws-pop-item" onclick="switchWorkspace(\\'' +
-            escapeHtml(ws.path) +
+            escapeJsAttr(ws.path) +
             '\\')">' +
             '<span><strong>' +
             escapeHtml(ws.name) +
@@ -4303,9 +4640,9 @@ const HTML_PAGE = `<!DOCTYPE html>
           '<button class="session-card' +
           (s.isSelected ? ' selected' : '') +
           '" style="--idx:' + idx + '" onclick="selectSourceSession(\\'' +
-          escapeHtml(s.agentId) +
+          escapeJsAttr(s.agentId) +
           '\\', \\'' +
-          escapeHtml(s.id) +
+          escapeJsAttr(s.id) +
           '\\')">' +
           '<div class="sc-top">' +
           '<span class="sc-agent">' +
@@ -4362,6 +4699,11 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     renderWorkbench();
 
+    const targetSelect = document.getElementById('simple-target');
+    const previousTarget = targetSelect.value;
+    targetSelect.innerHTML = state.nodes.filter(n => !n.isSource).map(n => '<option value="' + escapeHtml(n.id) + '">' + escapeHtml(n.name) + (n.installed ? '' : ' · setup may be required') + '</option>').join('');
+    if (Array.from(targetSelect.options).some(o => o.value === previousTarget)) targetSelect.value = previousTarget;
+    document.getElementById('simple-start').disabled = Boolean(relayingTargetId) || !targetSelect.value;
     // 5. Agent Process Rows (Scoped to Project + Explicit Set Source / Hand Off)
     const tbody = document.getElementById('agent-rows');
     const visibleNodes = state.nodes.filter((n) => {
@@ -4389,16 +4731,16 @@ const HTML_PAGE = `<!DOCTYPE html>
           ? '<button class="handoff-btn"><span>Relaying...</span></button>'
           : '<div class="act-group">' +
               '<button class="set-src-btn" onclick="selectSourceSession(\\'' +
-              escapeHtml(node.id) +
+              escapeJsAttr(node.id) +
               '\\', ' +
-              (node.projectSessionId ? '\\'' + escapeHtml(node.projectSessionId) + '\\'' : 'null') +
+              (node.projectSessionId ? '\\'' + escapeJsAttr(node.projectSessionId) + '\\'' : 'null') +
               ')" title="Use this agent as the Baton Source">Set Source</button>' +
               '<button class="handoff-btn" onmouseenter="previewRoute(\\'' +
-              escapeHtml(node.name) +
-              '\\')" onmouseleave="previewRoute(null)" onclick="handOffTo(\\'' +
-              escapeHtml(node.id) +
+              escapeJsAttr(node.name) +
+              '\\')" onmouseleave="previewRoute(null)" onclick="previewHandoff(\\'' +
+              escapeJsAttr(node.id) +
               '\\', \\'' +
-              escapeHtml(node.name) +
+              escapeJsAttr(node.name) +
               '\\')"><span>Hand off</span><span>-&gt;</span></button>' +
             '</div>';
 
@@ -4445,27 +4787,111 @@ const HTML_PAGE = `<!DOCTYPE html>
     requestAnimationFrame(positionGliders);
   }
 
-  async function handOffTo(targetId, targetName) {
+  async function showHandoffHistory() {
+    const output = document.getElementById('handoff-history');
+    try {
+      const res = await fetch('/api/history'); const records = await res.json();
+      if (!res.ok || !Array.isArray(records)) throw new Error(records.error || 'History unavailable');
+      output.textContent = records.length ? records.slice().reverse().map(r => r.timestamp + ' · ' + r.status + ' · ' + r.id + ' · reception unconfirmed').join('\\n') : 'No recorded handoffs';
+    } catch (error) { output.textContent = error.message; }
+  }
+  async function removeHandoffRules() {
+    try {
+      const res = await fetch('/api/unmount', { method: 'POST' }); const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Could not remove instructions');
+      state = result; render(); setStatus('Temporary handoff instructions removed; project work preserved');
+    } catch (error) { setStatus(error.message); }
+  }
+  function showManualContinuation(guide) {
+    const panel = document.getElementById('manual-continuation');
+    panel.hidden = !guide;
+    if (!guide) return;
+    document.getElementById('manual-instructions').textContent = guide.instructions;
+    document.getElementById('manual-shell').textContent = guide.shell;
+    document.getElementById('manual-command').value = guide.command;
+    document.getElementById('manual-prompt').value = guide.prompt;
+    document.getElementById('manual-location').textContent = 'Saved handoff: ' + guide.batonPath + ' · Reception unconfirmed';
+  }
+  async function copyManualField(id) {
+    const field = document.getElementById(id);
+    try { await navigator.clipboard.writeText(field.value); document.getElementById('manual-copy-status').textContent = 'Copied.'; }
+    catch { field.focus(); field.select(); document.getElementById('manual-copy-status').textContent = 'Select and copy the text using your keyboard.'; }
+  }
+  function startSimpleHandoff() {
+    const id = document.getElementById('simple-target').value;
+    const node = state.nodes.find(n => n.id === id);
+    if (node) previewHandoff(id, node.name);
+  }
+  async function undoById() {
+    const id = document.getElementById('undo-id').value.trim();
+    try {
+      const res = await fetch('/api/undo', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id}) });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error);
+      document.getElementById('simple-result').textContent = 'Handoff instructions restored. Your source code was not changed.';
+      const refreshed = await fetch('/api/state');
+      if (refreshed.ok) { state = await refreshed.json(); workbenchOpen = false; render(); }
+    } catch (error) { document.getElementById('simple-result').textContent = error.message; }
+  }
+  let reviewedTarget = null;
+  async function previewHandoff(targetId, targetName) {
+    const dialog = document.getElementById('handoff-review');
+    document.getElementById('handoff-review-title').textContent = 'Review handoff to ' + targetName;
+    document.getElementById('handoff-review-text').textContent = 'Preparing preview…';
+    document.getElementById('handoff-review-summary').textContent = 'Preparing preview…';
+    document.getElementById('handoff-confirm').disabled = true;
+    reviewedTarget = null;
+    dialog.showModal();
+    try {
+      const res = await fetch('/api/handoff', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetId, launchMode, preview: true, budgetTokens: Number(document.getElementById('handoff-budget').value) }) });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Preview failed');
+      document.getElementById('handoff-review-text').textContent = result.markdown;
+      document.getElementById('handoff-review-summary').textContent = 'Goal\\n' + result.goal + '\\n\\nNext steps\\n' + (result.next || []).join('\\n') + '\\n\\nThis saves handoff files, adds temporary instructions, copies the handoff, and uses your selected launch mode.';
+      reviewedTarget = { targetId, targetName, previewToken: result.previewToken };
+      document.getElementById('handoff-confirm').disabled = false;
+    } catch (error) { document.getElementById('handoff-review-summary').textContent = error.message; document.getElementById('handoff-review-text').textContent = error.message; }
+  }
+  function confirmHandoff() {
+    if (!reviewedTarget) return;
+    document.getElementById('handoff-review').close();
+    handOffTo(reviewedTarget.targetId, reviewedTarget.targetName, reviewedTarget.previewToken);
+  }
+  async function handOffTo(targetId, targetName, previewToken) {
     relayingTargetId = targetId;
     previewRoute(targetName);
     triggerPipelineWave();
     render();
-    setStatus('Executing 5-step handoff to ' + targetName + '...');
+    setStatus('Preparing handoff to ' + targetName + '...');
+    document.getElementById('simple-result').textContent = 'Delivering to ' + targetName + '…';
     try {
       const res = await fetch('/api/handoff', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetId, launchMode }),
+        body: JSON.stringify({ targetId, launchMode, previewToken, budgetTokens: Number(document.getElementById('handoff-budget').value) }),
       });
-      state = await res.json();
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Handoff failed');
+      state = result;
       workbenchOpen = true;
       activeWorkbenchTab = 'receipt';
+      anatomyStationIdx = 4;
+      postToAnatomyRig(4);
+    } catch (error) {
+      document.getElementById('simple-result').textContent = 'Could not finish: ' + error.message + '. Review the source and target, then retry.';
+      setStatus(error.message + ' — review source and target, then retry');
+      popActionToast('Handoff failed');
+      return;
     } finally {
       relayingTargetId = null;
+      render();
     }
     render();
-    popActionToast('✓ Baton Relayed -> ' + targetName);
-    setStatus(state.actionReceipt || 'Relayed baton to ' + targetName);
+    popActionToast((state.handoffStatus === 'partial' ? 'Partial delivery: ' : 'Delivered; reception unconfirmed: ') + targetName);
+    setStatus(state.actionReceipt || 'Delivery attempted');
+    document.getElementById('simple-result').textContent = (state.handoffStatus === 'partial' ? 'Automatic delivery could not complete. Your handoff files are saved. Use the manual steps below.' : 'Handoff files and instructions are ready. Check the destination conversation to confirm they were read.') + '\\nHandoff ID: ' + state.handoffId;
+    document.getElementById('undo-id').value = state.handoffId || '';
+    showManualContinuation(state.manualContinuation);
   }
 
   async function triggerBack() {
@@ -4493,6 +4919,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     else if (k === 'z') triggerBack();
     else if (k === 'c') copyBaton();
     else if (k === 'i') toggleWorkbenchDrawer();
+    else if (k === 'm') toggleAnatomyRig();
     else if (k === 'a') setAgentFilter(agentFilter === 'all' ? 'installed' : 'all');
     else if (k === 't') toggleTheme();
     else if (k === '1') selectWorkbenchTab('harvest');
@@ -4521,8 +4948,41 @@ const HTML_PAGE = `<!DOCTYPE html>
 
 const PORT = Number(process.env.VICEM_GUI_PORT || 4310);
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
+export function readJsonBody(req, maxBytes = 256 * 1024) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let received = 0;
+    let aborted = false;
+    req.on('data', (chunk) => {
+      if (aborted) return;
+      received += chunk.length;
+      if (received > maxBytes) {
+        aborted = true;
+        const err = new Error('Payload Too Large');
+        err.statusCode = 413;
+        reject(err);
+        return;
+      }
+      body += chunk;
+    });
+    req.on('end', () => {
+      if (aborted) return;
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        const err = new Error('Invalid JSON payload');
+        err.statusCode = 400;
+        reject(err);
+      }
+    });
+    req.on('error', (err) => {
+      if (!aborted) reject(err);
+    });
+  });
+}
+
+export const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
 
   if (url.pathname === '/') {
     const initData = await collectState();
@@ -4551,6 +5011,32 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (url.pathname === '/anatomy') {
+    const theme = url.searchParams.get('theme') === 'light' ? 'light' : 'dark';
+    const embed = url.searchParams.get('embed') === '1';
+    const filePath = theme === 'light' ? ANATOMY_LIGHT_PATH : ANATOMY_DARK_PATH;
+    if (fs.existsSync(filePath)) {
+      let html = fs.readFileSync(filePath, 'utf8');
+      if (embed) {
+        const embedCss = `<style>
+          html, body { padding: 0 !important; margin: 0 !important; min-height: 0 !important; height: 100% !important; overflow: hidden !important; background: transparent !important; }
+          .iso-page { width: 100% !important; max-width: 100% !important; margin: 0 !important; height: 100% !important; }
+          .iso-figure { margin: 0 !important; height: 100% !important; }
+          .iso-plate { box-shadow: none !important; padding: 24px 10px 22px !important; height: 100% !important; display: flex !important; flex-direction: column !important; justify-content: center !important; }
+          .iso-plate-corners { inset: 6px 10px !important; }
+          .iso-plate-corner { font-size: 9.5px !important; }
+          .iso-legend { display: none !important; }
+          .iso-stage { flex: 1 1 auto !important; min-height: 0 !important; display: flex !important; align-items: center !important; justify-content: center !important; }
+          .iso-stage svg { width: 100% !important; height: 166px !important; max-height: 166px !important; }
+        </style>`;
+        html = html.replace('</head>', () => `${embedCss}</head>`);
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+      return;
+    }
+  }
+
   if (url.pathname === '/api/state') {
     const data = await collectState();
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -4559,80 +5045,73 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/workspace' && req.method === 'POST') {
-    let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', async () => {
-      try {
-        const { projectRoot } = JSON.parse(body || '{}');
-        if (projectRoot && fs.existsSync(projectRoot)) {
-          selectedProjectRoot = projectRoot;
-          selectedSourceSessionId = null;
-          manualActiveAgent = null;
-          customGoalOverride = '';
-        }
-        const updated = await collectState();
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify(updated));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: String(e) }));
+    try {
+      const { projectRoot } = await readJsonBody(req);
+      if (projectRoot && typeof projectRoot === 'string' && fs.existsSync(projectRoot) && fs.statSync(projectRoot).isDirectory()) {
+        selectedProjectRoot = path.resolve(projectRoot);
+        selectedSourceSessionId = null;
+        manualActiveAgent = null;
+        customGoalOverride = '';
       }
-    });
+      const updated = await collectState();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(updated));
+    } catch (e) {
+      res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: e.message || String(e) }));
+    }
     return;
   }
 
   if (url.pathname === '/api/add-workspace' && req.method === 'POST') {
-    let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', async () => {
-      try {
-        const { rawPath } = JSON.parse(body || '{}');
-        const home = os.homedir();
-        let cleaned = String(rawPath || '').trim();
-        if (cleaned.startsWith('~/')) {
-          cleaned = path.join(home, cleaned.slice(2));
-        } else if (cleaned === '~') {
-          cleaned = home;
-        }
-        cleaned = path.resolve(cleaned);
-        if (!cleaned || !fs.existsSync(cleaned) || !fs.statSync(cleaned).isDirectory()) {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ error: `Directory not found: ${rawPath}` }));
-          return;
-        }
-        customWorkspacePaths.add(cleaned);
-        selectedProjectRoot = cleaned;
-        selectedSourceSessionId = null;
-        manualActiveAgent = null;
-        customGoalOverride = '';
-        const updated = await collectState();
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify(updated));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: String(e) }));
+    try {
+      const { rawPath } = await readJsonBody(req);
+      const home = os.homedir();
+      let cleaned = String(rawPath || '').trim();
+      if (!cleaned) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: `Directory not found: ${rawPath}` }));
+        return;
       }
-    });
+      if (cleaned.startsWith('~/')) {
+        cleaned = path.join(home, cleaned.slice(2));
+      } else if (cleaned === '~') {
+        cleaned = home;
+      }
+      cleaned = path.resolve(cleaned);
+      if (!cleaned || !fs.existsSync(cleaned) || !fs.statSync(cleaned).isDirectory()) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: `Directory not found: ${rawPath}` }));
+        return;
+      }
+      customWorkspacePaths.add(cleaned);
+      selectedProjectRoot = cleaned;
+      selectedSourceSessionId = null;
+      manualActiveAgent = null;
+      customGoalOverride = '';
+      const updated = await collectState();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(updated));
+    } catch (e) {
+      res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: e.message || String(e) }));
+    }
     return;
   }
 
   if (url.pathname === '/api/source' && req.method === 'POST') {
-    let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', async () => {
-      try {
-        const { agentId, sessionId } = JSON.parse(body || '{}');
-        if (agentId) manualActiveAgent = String(agentId);
-        if (sessionId !== undefined) selectedSourceSessionId = sessionId ? String(sessionId) : null;
-        customGoalOverride = '';
-        const updated = await collectState();
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify(updated));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: String(e) }));
-      }
-    });
+    try {
+      const { agentId, sessionId } = await readJsonBody(req);
+      if (agentId) manualActiveAgent = String(agentId);
+      if (sessionId !== undefined) selectedSourceSessionId = sessionId ? String(sessionId) : null;
+      customGoalOverride = '';
+      const updated = await collectState();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(updated));
+    } catch (e) {
+      res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: e.message || String(e) }));
+    }
     return;
   }
 
@@ -4649,9 +5128,9 @@ const server = http.createServer(async (req, res) => {
         modifiedFiles: rich.activeFileList.length > 0 ? rich.activeFileList : git.modifiedFiles,
       };
       const doneList = [];
-      for (const u of rich.recentUsers.slice(0, -1)) doneList.push(`User request handled: "${u}"`);
-      for (const a of rich.recentAssistant) doneList.push(`Agent summary: ${a}`);
-      for (const f of rich.activeFileList) doneList.push(`Active file modified/created in session: \`${f}\``);
+      for (const u of rich.recentUsers.slice(0, -1)) doneList.push(`Previous request (completion unverified): "${u}"`);
+      for (const a of rich.recentAssistant) doneList.push(`Agent report (unverified): ${a}`);
+      for (const f of rich.activeFileList) doneList.push(`Session file reference: \`${f}\``);
       const task = {
         goal: state.taskTitle,
         immediateNext: [
@@ -4681,125 +5160,146 @@ const server = http.createServer(async (req, res) => {
         })
       );
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ error: String(e) }));
     }
     return;
   }
 
   if (url.pathname === '/api/rehydrate' && req.method === 'POST') {
-    let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', async () => {
+    try {
+      const { filePath, symbolName } = await readJsonBody(req);
+      const projectRoot = fs.existsSync(selectedProjectRoot) ? selectedProjectRoot : DEFAULT_PROJECT_ROOT;
+      const git = GitCollector.collect(projectRoot);
+      const rich = harvestRichProjectContext(projectRoot, os.homedir(), git);
+      const skel = collectLiveSkeletonLedger(projectRoot, rich.activeFileList, false);
+      const diskLedger = DietLedger.load(projectRoot);
+      const rawCode =
+        diskLedger.getEntry(String(filePath || ''), symbolName ? String(symbolName) : null) ||
+        skel.liveLedger.getEntry(String(filePath || ''), symbolName ? String(symbolName) : null) ||
+        '// Symbol not found in ledger';
+      const code = SecretRedactor.redact(rawCode).sanitized;
+      let driftBanner = '';
       try {
-        const { filePath, symbolName } = JSON.parse(body || '{}');
-        const projectRoot = fs.existsSync(selectedProjectRoot) ? selectedProjectRoot : DEFAULT_PROJECT_ROOT;
-        const git = GitCollector.collect(projectRoot);
-        const rich = harvestRichProjectContext(projectRoot, os.homedir(), git);
-        const skel = collectLiveSkeletonLedger(projectRoot, rich.activeFileList, false);
-        const diskLedger = DietLedger.load(projectRoot);
-        const code =
-          diskLedger.getEntry(String(filePath || ''), symbolName ? String(symbolName) : null) ||
-          skel.liveLedger.getEntry(String(filePath || ''), symbolName ? String(symbolName) : null) ||
-          '// Symbol not found in ledger';
-        let driftBanner = '';
-        try {
-          const drift = StalenessDriftGuard.check(projectRoot);
-          if (drift.drifted) {
-            driftBanner = `// [STALENESS DRIFT WARNING]: Branch/commits changed since Baton snapshot (${drift.driftedFiles.join(', ')})\n`;
-          }
-        } catch {}
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(
-          JSON.stringify({
-            ok: true,
-            filePath,
-            symbolName,
-            rehydratedCode: driftBanner + code,
-          })
-        );
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: String(e) }));
-      }
-    });
+        const drift = StalenessDriftGuard.check(projectRoot);
+        if (drift.drifted) {
+          const driftedList = Array.isArray(drift.driftedFiles) && drift.driftedFiles.length > 0
+            ? drift.driftedFiles.join(', ')
+            : `${drift.batonHead || 'old'} -> ${drift.currentHead || 'new'}`;
+          driftBanner = `// [STALENESS DRIFT WARNING]: Branch/commits changed since Baton snapshot (${driftedList})\n`;
+        }
+      } catch {}
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          filePath,
+          symbolName,
+          rehydratedCode: driftBanner + code,
+        })
+      );
+    } catch (e) {
+      res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: e.message || String(e) }));
+    }
     return;
   }
 
   if (url.pathname === '/api/toggle-rule' && req.method === 'POST') {
-    let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', async () => {
-      try {
-        const { relPath } = JSON.parse(body || '{}');
-        const state = await collectState();
-        const projectRoot = state.projectRoot;
-        const fp = path.join(projectRoot, String(relPath || 'AGENTS.md'));
-        const isMounted =
-          fs.existsSync(fp) && fs.readFileSync(fp, 'utf8').includes('<!-- VICEM-BATON-START -->');
-        if (isMounted) {
-          const cur = fs.readFileSync(fp, 'utf8');
-          const stripped = cur
-            .replace(/<!-- VICEM-BATON-START -->[\s\S]*?<!-- VICEM-BATON-END -->\n?/g, '')
-            .trim();
-          if (stripped) {
-            fs.writeFileSync(fp, stripped + '\n', 'utf8');
-          } else {
-            fs.rmSync(fp, { force: true });
-          }
-        } else {
-          fs.mkdirSync(path.dirname(fp), { recursive: true });
-          const block = `<!-- VICEM-BATON-START -->\n${state.batonMarkdown.trim()}\n<!-- VICEM-BATON-END -->\n`;
-          if (fs.existsSync(fp)) {
-            const cur = fs.readFileSync(fp, 'utf8');
-            fs.writeFileSync(fp, block + '\n' + cur, 'utf8');
-          } else {
-            fs.writeFileSync(fp, block, 'utf8');
-          }
-        }
-        const updated = await collectState();
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify(updated));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: String(e) }));
+    try {
+      const { relPath } = await readJsonBody(req);
+      const projectRoot = fs.existsSync(selectedProjectRoot)
+        ? selectedProjectRoot
+        : DEFAULT_PROJECT_ROOT;
+      const targetRel = String(relPath || 'AGENTS.md');
+      const allowedRules = new Set([
+        'AGENTS.md',
+        'CLAUDE.md',
+        'GEMINI.md',
+        '.cursorrules',
+        '.windsurfrules',
+        '.clinerules',
+        '.github/copilot-instructions.md',
+      ]);
+      if (!allowedRules.has(targetRel) || !AtomicFs.isSafeRepoFilePath(projectRoot, targetRel)) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: `Unsafe rule file path rejected: ${targetRel}` }));
+        return;
       }
-    });
+      const state = await collectState();
+      const fp = path.join(projectRoot, targetRel);
+      const isMounted =
+        fs.existsSync(fp) && fs.readFileSync(fp, 'utf8').includes('<!-- VICEM-BATON-START -->');
+      if (isMounted) {
+        const cur = fs.readFileSync(fp, 'utf8');
+        const stripped = cur
+          .replace(/<!-- VICEM-BATON-START -->[\s\S]*<!-- VICEM-BATON-END -->\n?/g, '')
+          .trim();
+        if (stripped) {
+          fs.writeFileSync(fp, stripped + '\n', 'utf8');
+        } else {
+          fs.rmSync(fp, { force: true });
+        }
+      } else {
+        fs.mkdirSync(path.dirname(fp), { recursive: true });
+        const block = `<!-- VICEM-BATON-START -->\n${state.batonMarkdown.trim()}\n<!-- VICEM-BATON-END -->\n`;
+        if (fs.existsSync(fp)) {
+          const cur = fs.readFileSync(fp, 'utf8');
+          fs.writeFileSync(fp, block + '\n' + cur, 'utf8');
+        } else {
+          fs.writeFileSync(fp, block, 'utf8');
+        }
+      }
+      const updated = await collectState();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(updated));
+    } catch (e) {
+      res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: e.message || String(e) }));
+    }
     return;
   }
 
   if (url.pathname === '/api/goal' && req.method === 'POST') {
-    let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', async () => {
-      try {
-        const { goal } = JSON.parse(body || '{}');
-        customGoalOverride = String(goal || '').trim();
-        const updated = await collectState();
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify(updated));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: String(e) }));
-      }
-    });
+    try {
+      const { goal } = await readJsonBody(req);
+      customGoalOverride = String(goal || '').trim();
+      const updated = await collectState();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(updated));
+    } catch (e) {
+      res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: e.message || String(e) }));
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/undo' && req.method === 'POST') {
+    try { const {id} = await readJsonBody(req); const result = HandoffService.undo(selectedProjectRoot, id); res.writeHead(200, {'Content-Type':'application/json'}); res.end(JSON.stringify(result)); }
+    catch (error) { res.writeHead(409, {'Content-Type':'application/json'}); res.end(JSON.stringify({error:error.message})); }
+    return;
+  }
+
+  if (url.pathname === '/api/support' && req.method === 'GET') {
+    res.writeHead(200, {'Content-Type':'application/json'}); res.end(JSON.stringify(HandoffService.supportInfo())); return;
+  }
+
+  if (url.pathname === '/api/history' && req.method === 'GET') {
+    try { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(HandoffService.history(selectedProjectRoot))); }
+    catch (error) { res.end(JSON.stringify({ error: error.message })); }
     return;
   }
 
   if (url.pathname === '/api/handoff' && req.method === 'POST') {
-    let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', async () => {
-      try {
-        const { targetId, launchMode } = JSON.parse(body || '{}');
-        const updated = await executeRealHandoff(targetId || 'codex', launchMode || 'app');
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify(updated));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: String(e) }));
-      }
-    });
+    try {
+      const { targetId, launchMode, preview, budgetTokens, previewToken } = await readJsonBody(req);
+      const updated = await executeRealHandoff(targetId || 'codex', launchMode || 'app', { preview: preview === true, budgetTokens, previewToken });
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(updated));
+    } catch (e) {
+      res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: e.message || String(e) }));
+    }
     return;
   }
 
@@ -4811,17 +5311,22 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(updated));
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ error: String(e) }));
     }
     return;
   }
 
   if (url.pathname === '/api/clip' && req.method === 'POST') {
-    await VicemApp.run(['clip'], { projectRoot: selectedProjectRoot, skipLaunch: true });
-    const updated = await collectState();
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify(updated));
+    try {
+      await VicemApp.run(['clip'], { projectRoot: selectedProjectRoot, skipLaunch: true });
+      const updated = await collectState();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(updated));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: String(e) }));
+    }
     return;
   }
 
@@ -4829,23 +5334,30 @@ const server = http.createServer(async (req, res) => {
   res.end('Not found');
 });
 
-server.on('error', (err) => {
-  const url = `http://127.0.0.1:${PORT}`;
-  if (err && err.code === 'EADDRINUSE') {
-    console.log(`[Vicem Utility GUI] Already running at ${url}`);
+const isMainGuiModule =
+  process.argv[1] &&
+  fs.existsSync(process.argv[1]) &&
+  fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+
+if (isMainGuiModule) {
+  server.on('error', (err) => {
+    const url = `http://127.0.0.1:${PORT}`;
+    if (err && err.code === 'EADDRINUSE') {
+      console.log(`[Vicem Utility GUI] Already running at ${url}`);
+      if (process.env.VICEM_AUTO_OPEN === '1') {
+        openExternalCrossPlatform(url);
+      }
+      process.exit(0);
+    }
+    console.error('[Vicem Utility GUI] Server error:', err);
+    process.exit(1);
+  });
+
+  server.listen(PORT, '127.0.0.1', () => {
+    const url = `http://127.0.0.1:${PORT}`;
+    console.log(`[Vicem Utility GUI] Running at ${url}`);
     if (process.env.VICEM_AUTO_OPEN === '1') {
       openExternalCrossPlatform(url);
     }
-    process.exit(0);
-  }
-  console.error('[Vicem Utility GUI] Server error:', err);
-  process.exit(1);
-});
-
-server.listen(PORT, '127.0.0.1', () => {
-  const url = `http://127.0.0.1:${PORT}`;
-  console.log(`[Vicem Utility GUI] Running at ${url}`);
-  if (process.env.VICEM_AUTO_OPEN === '1') {
-    openExternalCrossPlatform(url);
-  }
-});
+  });
+}

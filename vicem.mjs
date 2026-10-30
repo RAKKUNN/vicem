@@ -35,26 +35,45 @@ process.emitWarning = function (warning, ...args) {
  * (SRS §6.1 Zero-Secret-Access & SAD §6 Credential Blindness)
  */
 export const CREDENTIAL_BLACKLIST_PATTERNS = [
-  /^\.env(?:\..+)?$/i,
+  /^\.env(?:\..+|rc)?$/i,
   /^auth\.json$/i,
   /^\.?credentials\.json$/i,
+  /^client_secret.*\.(?:json|txt|key)$/i,
+  /^secrets?\.(?:json|ya?ml|toml|ini)$/i,
+  /^service[_-]?account.*\.(?:json|key)$/i,
   /^oauth[_-]?.*\.(?:json|txt|key)$/i,
-  /^id_(?:rsa|ed25519|ecdsa|dsa)(?:\.pub)?$/i,
-  /^\.(?:npmrc|pypirc|netrc|docker)$/i,
-  /\.(?:pem|key|p12|pfx|keystore)$/i,
+  /^id_(?:rsa|ed25519|ecdsa|dsa)(?:\.pub)?(?:\.key)?$/i,
+  /^\.(?:npmrc|pypirc|netrc|docker|htpasswd)$/i,
+  /\.(?:pem|key|p12|pfx|keystore|jks|crt|cer|der)$/i,
   /^token[s]?\.(?:json|txt)$/i,
 ];
 
 export function isCredentialFile(filePath) {
-  const base = path.basename(filePath);
+  if (!filePath || typeof filePath !== 'string') return false;
+  const normalized = filePath.replace(/\\/g, '/').trim();
+  if (!normalized) return false;
+  const base = path.posix.basename(normalized);
+  if (/^\.env\.(?:example|sample|template)$/i.test(base)) {
+    return false;
+  }
   if (CREDENTIAL_BLACKLIST_PATTERNS.some((re) => re.test(base))) {
     return true;
   }
-  const normalized = filePath.replace(/\\/g, '/');
-  if (/(?:^|\/)\.(?:ssh|aws|gnupg)\//i.test(normalized)) {
+  if (/(?:^|\/)\.(?:ssh|aws|gnupg|kube|gcloud|docker)\//i.test(normalized)) {
     return true;
   }
   return false;
+}
+
+export function matchesProjectPathBoundary(haystack, projectRoot) {
+  if (!haystack || !projectRoot || typeof haystack !== 'string' || typeof projectRoot !== 'string') {
+    return false;
+  }
+  const normRoot = projectRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!normRoot) return false;
+  const escaped = normRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`${escaped}(?![A-Za-z0-9_.-])`);
+  return re.test(haystack.replace(/\\/g, '/'));
 }
 
 /**
@@ -81,13 +100,36 @@ export class AtomicFs {
   }
 
   static isSafeRepoFilePath(projectRoot, targetPath) {
-    if (!projectRoot || !targetPath) return false;
+    if (!projectRoot || !targetPath || typeof projectRoot !== 'string' || typeof targetPath !== 'string') {
+      return false;
+    }
+    const trimmed = targetPath.trim();
+    if (!trimmed || trimmed.includes('\0') || trimmed.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(trimmed)) {
+      return false;
+    }
     const root = path.resolve(projectRoot);
-    const dest = path.resolve(root, targetPath);
+    const dest = path.resolve(root, trimmed);
     const rel = path.relative(root, dest);
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return false;
     const norm = rel.replace(/\\/g, '/');
     if (norm === '.git' || norm.startsWith('.git/')) return false;
+    try {
+      const realRoot = fs.existsSync(root) ? fs.realpathSync(root) : root;
+      let checkPath = dest;
+      while (checkPath && checkPath !== path.dirname(checkPath)) {
+        if (fs.existsSync(checkPath)) {
+          const realCheck = fs.realpathSync(checkPath);
+          const realRel = path.relative(realRoot, realCheck);
+          if (realRel.startsWith('..') || path.isAbsolute(realRel)) {
+            return false;
+          }
+          break;
+        }
+        checkPath = path.dirname(checkPath);
+      }
+    } catch {
+      return false;
+    }
     return true;
   }
 
@@ -233,6 +275,10 @@ export class TokenEstimator {
   }
 
   static formatCount(tokens) {
+    if (!tokens || tokens <= 0) return '0';
+    if (tokens >= 1000000) {
+      return `${(tokens / 1000000).toFixed(1)}M`;
+    }
     if (tokens >= 1000) {
       return `${(tokens / 1000).toFixed(1)}k`;
     }
@@ -245,11 +291,11 @@ export class TokenEstimator {
  */
 export function stripAnsi(str) {
   if (!str) return '';
-  return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+  return String(str).replace(/\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
 }
 
 export function isFullWidthCodePoint(code) {
-  if (Number.isNaN(code)) return false;
+  if (typeof code !== 'number' || Number.isNaN(code)) return false;
   return (
     code >= 0x1100 &&
     (code <= 0x115f || // Hangul Jamo
@@ -379,7 +425,7 @@ export class SecretRedactor {
 
     // 2. High-entropy secret assignment rules (e.g. API_KEY = "...", secret: "...")
     const assignmentRegex =
-      /\b(secret|token|password|passwd|api_?key|auth_?token|private_?key|access_?key|client_?secret)\b(\s*[:=]\s*["']?)([A-Za-z0-9+/=_\-]{20,})(["']?)/gi;
+      /\b(secret|token|password|passwd|api_?key|auth_?token|private_?key|access_?key|client_?secret)\b(\s*[:=]\s*["']?)([A-Za-z0-9+/=_\-!@#$%^&*().~]{20,})(["']?)/gi;
     sanitized = sanitized.replace(assignmentRegex, (full, keyName, sep, candidate, quote) => {
       if (candidate.startsWith('‹REDACTED:')) return full;
       const entropy = SecretRedactor.shannonEntropy(candidate);
@@ -434,7 +480,7 @@ export class NoiseGate {
     '.min.js', '.min.css', '.map', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.pdf',
     '.zip', '.tar', '.gz', '.tgz', '.7z', '.woff', '.woff2', '.ttf', '.eot', '.otf',
     '.mp3', '.mp4', '.mov', '.avi', '.wasm', '.pyc', '.pyo', '.so', '.dylib', '.dll',
-    '.exe', '.bin', '.sqlite', '.db', '.db-wal', '.db-shm', '.vscdb', '.asar',
+    '.exe', '.bin', '.sqlite', '.sqlite3', '.db', '.db-wal', '.db-shm', '.vscdb', '.asar',
   ]);
 
   constructor(projectRoot = null) {
@@ -708,9 +754,12 @@ export class DataSampler {
     for (const stmt of statements) {
       const clean = stmt.trim();
       if (!clean) continue;
-      if (/^(?:CREATE|ALTER|DROP|COMMENT\s+ON)\b/i.test(clean)) {
+      const withoutComments = clean
+        .replace(/^(?:\s*(?:--[^\r\n]*(?:\r?\n|$)|\/\*[\s\S]*?\*\/))+/, '')
+        .trim();
+      if (/^(?:CREATE|ALTER|DROP|COMMENT\s+ON)\b/i.test(withoutComments)) {
         ddlKept.push(clean + ';');
-      } else if (/^(?:INSERT\s+INTO|COPY\s+)/i.test(clean)) {
+      } else if (/^(?:INSERT\s+INTO|COPY\s+)/i.test(withoutComments)) {
         omittedInserts++;
       }
     }
@@ -756,9 +805,11 @@ export class DietLedger {
   }
 
   getEntry(filePath, symbolName = null) {
-    const normReq = filePath.replace(/\\/g, '/');
+    if (!filePath || typeof filePath !== 'string') return null;
+    const normReq = filePath.replace(/\\/g, '/').trim();
+    if (!normReq) return null;
     const matches = this.entries.filter((e) => {
-      const normEntry = e.filePath.replace(/\\/g, '/');
+      const normEntry = String(e.filePath || '').replace(/\\/g, '/');
       return normEntry === normReq || normEntry.endsWith('/' + normReq) || normReq.endsWith('/' + normEntry);
     });
     if (matches.length === 0) return null;
@@ -767,7 +818,7 @@ export class DietLedger {
     }
     const exact = matches.find((m) => m.symbolName === symbolName);
     if (exact) return exact.content;
-    const partial = matches.find((m) => m.symbolName.toLowerCase().includes(symbolName.toLowerCase()));
+    const partial = matches.find((m) => m.symbolName.toLowerCase().includes(String(symbolName).toLowerCase()));
     return partial ? partial.content : null;
   }
 
@@ -865,57 +916,64 @@ export class CodeSkeletonizer {
         lastNonSpaceChar = quote;
         continue;
       }
-      // 4. Template literal (`...`) with nested ${ ... } expression depth tracking (BUG-02 Fix)
+      // 4. Template literal (`...`) with recursive nested ${ ... } expression depth tracking (BUG-02 & BUG-CS-01 Fix)
       if (ch === '`') {
-        i++;
-        while (i < len) {
-          if (content[i] === '\\') {
-            i += 2;
-            continue;
-          }
-          if (content[i] === '`') {
-            i++;
-            break;
-          }
-          if (content[i] === '$' && content[i + 1] === '{') {
-            i += 2;
-            let exprDepth = 1;
-            while (i < len && exprDepth > 0) {
-              const c = content[i];
-              const nx = content[i + 1];
-              if (c === '\\') {
-                i += 2;
-                continue;
-              }
-              if (c === '/' && nx === '/') {
-                i += 2;
-                while (i < len && content[i] !== '\n') i++;
-                continue;
-              }
-              if (c === '/' && nx === '*') {
-                i += 2;
-                while (i < len && !(content[i] === '*' && content[i + 1] === '/')) i++;
-                i += 2;
-                continue;
-              }
-              if (c === "'" || c === '"' || c === '`') {
-                const q = c;
-                i++;
-                while (i < len && content[i] !== q) {
-                  if (content[i] === '\\') i++;
-                  i++;
-                }
-                i++;
-                continue;
-              }
-              if (c === '{') exprDepth++;
-              else if (c === '}') exprDepth--;
-              i++;
+        const skipTpl = (startIdx) => {
+          let k = startIdx + 1;
+          while (k < len) {
+            if (content[k] === '\\') {
+              k += 2;
+              continue;
             }
-            continue;
+            if (content[k] === '`') {
+              return k + 1;
+            }
+            if (content[k] === '$' && content[k + 1] === '{') {
+              k += 2;
+              let exprDepth = 1;
+              while (k < len && exprDepth > 0) {
+                const c = content[k];
+                const nx = content[k + 1];
+                if (c === '\\') {
+                  k += 2;
+                  continue;
+                }
+                if (c === '/' && nx === '/') {
+                  k += 2;
+                  while (k < len && content[k] !== '\n') k++;
+                  continue;
+                }
+                if (c === '/' && nx === '*') {
+                  k += 2;
+                  while (k < len && !(content[k] === '*' && content[k + 1] === '/')) k++;
+                  k += 2;
+                  continue;
+                }
+                if (c === "'" || c === '"') {
+                  const q = c;
+                  k++;
+                  while (k < len && content[k] !== q) {
+                    if (content[k] === '\\') k++;
+                    k++;
+                  }
+                  k++;
+                  continue;
+                }
+                if (c === '`') {
+                  k = skipTpl(k);
+                  continue;
+                }
+                if (c === '{') exprDepth++;
+                else if (c === '}') exprDepth--;
+                k++;
+              }
+              continue;
+            }
+            k++;
           }
-          i++;
-        }
+          return k;
+        };
+        i = skipTpl(i);
         lastNonSpaceChar = '`';
         continue;
       }
@@ -973,8 +1031,23 @@ export class CodeSkeletonizer {
   static stripNestedParens(str) {
     let out = '';
     let parenDepth = 0;
+    let inQuote = null;
     for (let i = 0; i < str.length; i++) {
       const ch = str[i];
+      if (inQuote) {
+        if (ch === '\\') {
+          i++;
+          continue;
+        }
+        if (ch === inQuote) inQuote = null;
+        if (parenDepth === 0) out += ch;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') {
+        inQuote = ch;
+        if (parenDepth === 0) out += ch;
+        continue;
+      }
       if (ch === '(') {
         if (parenDepth === 0) out += ch;
         parenDepth++;
@@ -993,7 +1066,9 @@ export class CodeSkeletonizer {
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/gm, '')
       .trim();
-    const collapsed = CodeSkeletonizer.stripNestedParens(clean);
+    const collapsed = CodeSkeletonizer.stripNestedParens(clean)
+      .replace(/:\s*\{[^{}]*\}\s*=>/g, ' =>')
+      .replace(/\)\s*:\s*\{[^{}]*\}/g, ')');
     const lastSegment = collapsed.split(/[;{}]/).pop().trim();
 
     // Type / Contract definitions MUST be 100% preserved
@@ -1009,15 +1084,20 @@ export class CodeSkeletonizer {
       return { kind: 'control', symbol: null };
     }
 
-    // Function or Method declaration detection (supports arrow return types like `=> void` and multiline params — BUG-03 Fix)
+    // Function or Method declaration detection (supports arrow return types, generic arrows, generator methods, Go receivers, Rust fn, Java/C++/C# typed functions)
     const fnMatch =
-      lastSegment.match(/\b(?:function\s*\*?\s*|fn\s+|func\s+)([A-Za-z0-9_$]+)/) ||
-      lastSegment.match(/\b(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?(?:\([\s\S]*?\)|[A-Za-z0-9_$]+)\s*=>/) ||
+      lastSegment.match(/\b(?:function\s*\*?\s*|fn\s+|func\s+(?:\(\)\s*)?)([A-Za-z0-9_$]+)/) ||
       lastSegment.match(
-        /(?:^|\n)\s*(?:(?:public|private|protected|static|async|override|readonly|get|set|export)\b\s+)*([A-Za-z0-9_$]+)\s*(?:<[^>]*>)?\s*\([^;]*\)\s*(?::\s*[\s\S]+)?$/
+        /\b(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?(?:<[\s\S]*?>\s*)?(?:\([\s\S]*?\)|[A-Za-z0-9_$]+)\s*(?::\s*[\s\S]*?)?=>/
+      ) ||
+      lastSegment.match(
+        /(?:^|\n)\s*(?:(?:public|private|protected|internal|static|async|synchronized|virtual|final|inline|constexpr|override|readonly|get|set|export)\b\s+)*(?:[A-Za-z0-9_$:<>[\],?*&\s]+\s+)?\*?\s*([A-Za-z0-9_$]+)\s*(?:<[^>]*>)?\s*\([^;]*\)\s*(?:(?:const|noexcept|throws\s+[A-Za-z0-9_.,\s]+|(?::|->)\s*[\s\S]+))?$/
       );
 
-    if (fnMatch && fnMatch[1] && !['if', 'for', 'while', 'switch', 'catch', 'return'].includes(fnMatch[1])) {
+    const reservedControl = new Set([
+      'if', 'for', 'while', 'switch', 'catch', 'return', 'else', 'do', 'try', 'finally', 'new', 'delete', 'sizeof', 'typeof',
+    ]);
+    if (fnMatch && fnMatch[1] && !reservedControl.has(fnMatch[1])) {
       return { kind: 'function', symbol: fnMatch[1] };
     }
     return { kind: 'other', symbol: null };
@@ -1132,9 +1212,18 @@ export class CodeSkeletonizer {
       const symbol = defMatch[2];
       const defStartLine = i;
 
-      // Advance until the end of signature (colon at end of line)
+      // Advance until balanced parentheses close AND colon appears at end of line (outside comments)
       let sigEndLine = i;
-      while (sigEndLine < lines.length && !/:\s*(?:#.*)?$/.test(lines[sigEndLine])) {
+      let parenBalance = 0;
+      while (sigEndLine < lines.length) {
+        const lineNoComment = lines[sigEndLine].replace(/#.*$/, '');
+        for (const ch of lineNoComment) {
+          if (ch === '(') parenBalance++;
+          else if (ch === ')') parenBalance = Math.max(0, parenBalance - 1);
+        }
+        if (parenBalance === 0 && /:\s*$/.test(lineNoComment)) {
+          break;
+        }
         sigEndLine++;
       }
       if (sigEndLine >= lines.length) {
@@ -1143,11 +1232,21 @@ export class CodeSkeletonizer {
         continue;
       }
 
-      // Find the end of the indented block
+      // Find the end of the indented block (tracking triple-quoted strings anywhere in statements)
       let bodyEndLine = sigEndLine;
       let j = sigEndLine + 1;
       let inDocstring = false;
       let docDelim = null;
+
+      const countUnescapedDelim = (str, delim) => {
+        let count = 0;
+        let idx = 0;
+        while ((idx = str.indexOf(delim, idx)) !== -1) {
+          if (idx === 0 || str[idx - 1] !== '\\') count++;
+          idx += 3;
+        }
+        return count;
+      };
 
       while (j < lines.length) {
         const cur = lines[j];
@@ -1155,7 +1254,7 @@ export class CodeSkeletonizer {
 
         if (inDocstring) {
           bodyEndLine = j;
-          if (trimmed.includes(docDelim)) {
+          if (countUnescapedDelim(trimmed, docDelim) % 2 === 1) {
             inDocstring = false;
           }
           j++;
@@ -1172,11 +1271,12 @@ export class CodeSkeletonizer {
           break;
         }
 
-        if (trimmed.startsWith('"""') || trimmed.startsWith("'''")) {
-          docDelim = trimmed.slice(0, 3);
-          const rest = trimmed.slice(3);
-          if (!rest.includes(docDelim)) {
+        const noComment = trimmed.replace(/#.*$/, '');
+        for (const d of ['"""', "'''"]) {
+          if (countUnescapedDelim(noComment, d) % 2 === 1) {
+            docDelim = d;
             inDocstring = true;
+            break;
           }
         }
         bodyEndLine = j;
@@ -1451,9 +1551,10 @@ export function readJsonlHead(filePath, maxLines = 15, maxBytes = 64 * 1024) {
     const buf = Buffer.allocUnsafe(readSize);
     fs.readSync(fd, buf, 0, readSize, 0);
     const content = buf.toString('utf8');
-    const lines = content.split(/\r?\n/).filter((l) => l.trim().length > 0).slice(0, maxLines);
+    const lines = content.split(/\r?\n/).filter((l) => l.trim().length > 0);
     const events = [];
     for (const line of lines) {
+      if (events.length >= maxLines) break;
       try {
         events.push(JSON.parse(line));
       } catch {
@@ -1545,15 +1646,15 @@ export class DeterministicTaskExtractor {
       if (!ev || typeof ev !== 'object') continue;
 
       // 1. Extract User Prompts (Claude Code, Codex, Gemini, VS Code, Export formats)
-      const role = ev.role || ev.type || ev.message?.role || ev.sender;
+      const role = ev.role || ev.payload?.role || ev.type || ev.payload?.type || ev.message?.role || ev.sender;
       const textContent = DeterministicTaskExtractor.extractTextFromEvent(ev);
 
-      if (role === 'user' || role === 'human' || ev.type === 'user_message') {
-        if (textContent) {
+      if (role === 'user' || role === 'human' || ev.type === 'user_message' || ev.payload?.type === 'user_message') {
+        if (textContent && !/^(?:현재\s*세션.*handoff|.*(?:로|에게)\s*(?:handoff|인계)(?:해|해줘|해주세요)?[.! ]*|handoff (?:this|the current) session.*)$/i.test(textContent.trim())) {
           userPrompts.push(textContent.trim());
           lastEventWasUnansweredUser = true;
         }
-      } else if (role === 'assistant' || role === 'model' || ev.type === 'agent_message') {
+      } else if (role === 'assistant' || role === 'model' || ev.type === 'agent_message' || ev.payload?.type === 'agent_message') {
         if (textContent) {
           assistantMessages.push(textContent.trim());
         }
@@ -1703,11 +1804,13 @@ export class DeterministicTaskExtractor {
   static extractTextFromEvent(ev) {
     if (typeof ev.content === 'string') return ev.content;
     if (typeof ev.text === 'string') return ev.text;
-    const msgContent = ev.message?.content || ev.content;
+    if (typeof ev.payload?.message === 'string') return ev.payload.message;
+    if (typeof ev.payload?.text === 'string') return ev.payload.text;
+    const msgContent = ev.message?.content || ev.payload?.content || ev.content;
     if (typeof msgContent === 'string') return msgContent;
     if (Array.isArray(msgContent)) {
       return msgContent
-        .filter((part) => part && (part.type === 'text' || typeof part.text === 'string'))
+        .filter((part) => part && (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text' || typeof part.text === 'string'))
         .map((part) => part.text || '')
         .join('\n');
     }
@@ -1734,7 +1837,7 @@ export class DeterministicTaskExtractor {
         });
       }
     }
-    const msgContent = ev.message?.content || ev.content;
+    const msgContent = ev.message?.content || ev.payload?.content || ev.content;
     if (Array.isArray(msgContent)) {
       for (const block of msgContent) {
         if (block && block.type === 'tool_use') {
@@ -1760,6 +1863,22 @@ export class DeterministicTaskExtractor {
         input,
         exitCode: ev.exit_code ?? ev.exitCode,
         output: ev.output,
+      });
+    }
+    if (ev.payload?.type === 'function_call' || ev.payload?.type === 'tool_use') {
+      let input = ev.payload.input || ev.payload.arguments || {};
+      if (typeof input === 'string') {
+        try {
+          input = JSON.parse(input);
+        } catch {
+          input = {};
+        }
+      }
+      calls.push({
+        name: ev.payload.name || '',
+        input,
+        exitCode: ev.payload.exit_code ?? ev.payload.exitCode,
+        output: ev.payload.output,
       });
     }
     return calls;
@@ -1935,6 +2054,34 @@ export class CodexHarvester extends SessionHarvester {
         rawEvents: readJsonlTail(latest.filePath, 200),
       };
     }
+    const sqlitePath = path.join(this.getCodexHome(), 'state_5.sqlite');
+    if (fs.existsSync(sqlitePath)) {
+      const sqliteSession = await readWalDatabaseSnapshot(sqlitePath, (db) => {
+        try {
+          const row = db
+            .prepare(`SELECT id, title, updated_at FROM threads WHERE cwd = ? ORDER BY updated_at DESC LIMIT 1`)
+            .get(this.projectRoot);
+          if (row) {
+            const mtimeMs =
+              typeof row.updated_at === 'number'
+                ? row.updated_at < 1e12
+                  ? row.updated_at * 1000
+                  : row.updated_at
+                : new Date(row.updated_at || Date.now()).getTime();
+            return {
+              agent: 'codex',
+              sessionId: String(row.id || 'codex-sqlite'),
+              mtimeMs,
+              rawEvents: row.title ? [{ role: 'user', content: String(row.title) }] : [],
+            };
+          }
+        } catch {
+          // Table schema may differ
+        }
+        return null;
+      });
+      if (sqliteSession) return sqliteSession;
+    }
     return null;
   }
 }
@@ -1977,9 +2124,17 @@ export class GeminiHarvester extends SessionHarvester {
     const files = this.findSessionFiles();
     if (files.length === 0) return null;
     const latest = files[0];
-    const rawEvents = latest.filePath.endsWith('.jsonl')
-      ? readJsonlTail(latest.filePath, 200)
-      : JSON.parse(fs.readFileSync(latest.filePath, 'utf8')).messages || [];
+    let rawEvents = [];
+    if (latest.filePath.endsWith('.jsonl')) {
+      rawEvents = readJsonlTail(latest.filePath, 200);
+    } else {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(latest.filePath, 'utf8'));
+        rawEvents = Array.isArray(parsed?.messages) ? parsed.messages : Array.isArray(parsed) ? parsed : [];
+      } catch {
+        rawEvents = [];
+      }
+    }
     return {
       agent: 'gemini',
       sessionId: latest.sessionId,
@@ -2051,7 +2206,7 @@ export class AntigravityHarvester extends SessionHarvester {
           const stat = fs.statSync(transcriptPath);
           const headEvents = readJsonlHead(transcriptPath, 15, 48 * 1024);
           const headRaw = JSON.stringify(headEvents);
-          if (headRaw.includes(targetUri) || headRaw.includes(this.projectRoot)) {
+          if (matchesProjectPathBoundary(headRaw, this.projectRoot)) {
             matches.push({
               filePath: transcriptPath,
               sessionId: e.name,
@@ -2132,7 +2287,7 @@ export class CursorHarvester extends SessionHarvester {
           if (
             folder === targetUri ||
             decodedFolder === targetUri ||
-            decodedFolder.endsWith(this.projectRoot)
+            matchesProjectPathBoundary(decodedFolder, this.projectRoot)
           ) {
             const dbPath = path.join(baseDir, d.name, 'state.vscdb');
             if (fs.existsSync(dbPath)) {
@@ -2257,7 +2412,7 @@ export class VSCodeCopilotHarvester extends SessionHarvester {
         try {
           const wsData = JSON.parse(fs.readFileSync(wsJsonPath, 'utf8'));
           const decodedFolder = decodeURIComponent(String(wsData.folder || ''));
-          if (decodedFolder === targetUri || decodedFolder.endsWith(this.projectRoot)) {
+          if (decodedFolder === targetUri || matchesProjectPathBoundary(decodedFolder, this.projectRoot)) {
             const chatDir = path.join(baseDir, d.name, 'chatSessions');
             if (!fs.existsSync(chatDir)) continue;
             const files = fs
@@ -2290,12 +2445,22 @@ export class VSCodeCopilotHarvester extends SessionHarvester {
     if (!match) return null;
     const events = [];
     try {
-      const raw = JSON.parse(fs.readFileSync(match.filePath, 'utf8'));
-      const requests = raw.requests || [];
-      for (const req of requests.slice(-30)) {
-        const msg = req?.message?.text || req?.message;
-        if (typeof msg === 'string' && msg.trim()) {
-          events.push({ role: 'user', content: msg.trim() });
+      if (match.filePath.endsWith('.jsonl')) {
+        const lines = readJsonlTail(match.filePath, 100);
+        for (const row of lines) {
+          const msg = row?.message?.text || row?.message || row?.content || row?.prompt;
+          if (typeof msg === 'string' && msg.trim()) {
+            events.push({ role: row?.role || 'user', content: msg.trim() });
+          }
+        }
+      } else {
+        const raw = JSON.parse(fs.readFileSync(match.filePath, 'utf8'));
+        const requests = raw.requests || [];
+        for (const req of requests.slice(-30)) {
+          const msg = req?.message?.text || req?.message;
+          if (typeof msg === 'string' && msg.trim()) {
+            events.push({ role: 'user', content: msg.trim() });
+          }
         }
       }
     } catch {
@@ -2349,7 +2514,7 @@ export class ClineHarvester extends SessionHarvester {
         try {
           const stat = fs.statSync(uiMsgPath);
           const headSlice = fs.readFileSync(uiMsgPath, 'utf8').slice(0, 16384);
-          if (headSlice.includes(this.projectRoot)) {
+          if (matchesProjectPathBoundary(headSlice, this.projectRoot)) {
             matches.push({ filePath: uiMsgPath, sessionId: d.name, mtimeMs: stat.mtimeMs });
           }
         } catch {
@@ -2459,7 +2624,14 @@ export class OpenCodeHarvester extends SessionHarvester {
 
 export class WebExportHarvester {
   static parseExportJson(jsonText) {
-    const data = typeof jsonText === 'string' ? JSON.parse(jsonText) : jsonText;
+    if (jsonText == null) return [];
+    let data;
+    try {
+      data = typeof jsonText === 'string' ? JSON.parse(jsonText) : jsonText;
+    } catch {
+      return [];
+    }
+    if (!data || typeof data !== 'object') return [];
     const events = [];
 
     // 1. ChatGPT conversations.json export format (mapping tree)
@@ -2560,7 +2732,10 @@ export class FuzzyTargetMatcher {
 
     // 2. Explicit Alias Map
     if (FuzzyTargetMatcher.ALIAS_MAP.has(clean)) {
-      return { matched: FuzzyTargetMatcher.ALIAS_MAP.get(clean), distance: 0, via: 'alias' };
+      const aliasTarget = FuzzyTargetMatcher.ALIAS_MAP.get(clean);
+      if (candidates.includes(aliasTarget)) {
+        return { matched: aliasTarget, distance: 0, via: 'alias' };
+      }
     }
 
     // 3. Length-adaptive Levenshtein fuzzy match
@@ -2752,7 +2927,7 @@ export class PreHandoffSnapshotStore {
         .readdirSync(baseDir, { withFileTypes: true })
         .filter((d) => d.isDirectory())
         .map((d) => ({ name: d.name, mtime: fs.statSync(path.join(baseDir, d.name)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime);
+        .sort((a, b) => b.mtime - a.mtime || b.name.localeCompare(a.name));
       return dirs.length > 0 ? dirs[0].name : null;
     } catch {
       return null;
@@ -2768,9 +2943,9 @@ export class PreHandoffSnapshotStore {
         .filter((d) => d.isDirectory())
         .map((d) => {
           const full = path.join(baseDir, d.name);
-          return { full, mtime: fs.statSync(full).mtimeMs };
+          return { name: d.name, full, mtime: fs.statSync(full).mtimeMs };
         })
-        .sort((a, b) => b.mtime - a.mtime);
+        .sort((a, b) => b.mtime - a.mtime || b.name.localeCompare(a.name));
       for (let i = keepCount; i < dirs.length; i++) {
         fs.rmSync(dirs[i].full, { recursive: true, force: true });
       }
@@ -2879,10 +3054,16 @@ export class ContextFileRanker {
 
     const addScore = (relFile, pts) => {
       if (!relFile) return;
-      const norm = relFile.replace(/\\/g, '/');
+      const norm = relFile.replace(/\\/g, '/').replace(/^\.\//, '');
+      if (!AtomicFs.isSafeRepoFilePath(resolvedRoot, norm)) return;
       if (noiseGate.isIgnored(norm)) return;
       const full = path.join(resolvedRoot, norm);
       if (!fs.existsSync(full)) return;
+      try {
+        if (!fs.statSync(full).isFile()) return;
+      } catch {
+        return;
+      }
       scores.set(norm, (scores.get(norm) || 0) + pts);
     };
 
@@ -2892,15 +3073,48 @@ export class ContextFileRanker {
       ...(taskContext?.userPrompts || []),
     ].join('\n');
 
+    const scoredFromError = new Set();
+    const scoredFromPrompt = new Set();
+    const fileMentionRegex = /([A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})\b/g;
+
+    if (errorLog && typeof errorLog === 'string') {
+      for (const m of errorLog.matchAll(fileMentionRegex)) {
+        const cand = m[1].replace(/^\.\//, '');
+        if (!scoredFromError.has(cand)) {
+          scoredFromError.add(cand);
+          addScore(cand, 100);
+        }
+      }
+    }
+
+    if (promptCorpus) {
+      for (const m of promptCorpus.matchAll(fileMentionRegex)) {
+        const cand = m[1].replace(/^\.\//, '');
+        if (!scoredFromPrompt.has(cand)) {
+          scoredFromPrompt.add(cand);
+          addScore(cand, 80);
+        }
+      }
+    }
+
     // 1. Score modified files (+50 base, +100 if in errorLog, +80 if in prompts)
     for (const rel of modifiedFiles) {
-      const norm = rel.replace(/\\/g, '/');
+      const norm = String(rel || '').replace(/\\/g, '/').replace(/^\.\//, '');
+      if (!norm) continue;
       const baseName = path.basename(norm);
       addScore(norm, 50);
-      if (errorLog && (errorLog.includes(norm) || errorLog.includes(baseName))) {
+      if (
+        errorLog &&
+        !scoredFromError.has(norm) &&
+        (errorLog.includes(norm) || errorLog.includes(baseName))
+      ) {
         addScore(norm, 100);
       }
-      if (promptCorpus && (promptCorpus.includes(norm) || promptCorpus.includes(baseName))) {
+      if (
+        promptCorpus &&
+        !scoredFromPrompt.has(norm) &&
+        (promptCorpus.includes(norm) || promptCorpus.includes(baseName))
+      ) {
         addScore(norm, 80);
       }
     }
@@ -3009,8 +3223,8 @@ export class BatonIaBuilder {
     // Assemble Zone 2 (Middle Evidence) with budget awareness
     const doneSection =
       (task.done || []).length > 0
-        ? task.done.map((d) => `- [x] ${d}`).join('\n')
-        : '- [x] Initial repository state inspected';
+        ? task.done.map((d) => /unverified|Session file reference|Modified file:|Working tree modified:/.test(d) ? `- Evidence (not verified complete): ${d}` : `- [x] ${d}`).join('\n')
+        : '- No completed tasks verified';
 
     const nextSection = (task.immediateNext || [])
       .map((item, idx) => `${idx + 1}. **${item}**`)
@@ -3050,7 +3264,7 @@ export class BatonIaBuilder {
       return [
         // ================= TOP PRIMACY ZONE (First 15%: Human 3s Scan & LLM Primacy Bias) =================
         `# BATON: ${titleGoal}`,
-        `> Generated by Vicem v5.3 | Source: ${sourceAgent} → Target: ${targetAgent}${roleTag} | Diet: ${rawTok} → ${dietTok} tokens (-${ratio}%) | Commit: ${git.headCommit}`,
+        `> Generated by Vicem v1.1.2 | Source: ${sourceAgent} → Target: ${targetAgent}${roleTag} | Diet: ${rawTok} → ${dietTok} tokens (-${ratio}%) | Commit: ${git.headCommit}`,
         ``,
         `## 1. Goal`,
         `${task.goal}`,
@@ -3299,13 +3513,14 @@ export class StalenessDriftGuard {
   static check(projectRoot) {
     const batonPath = path.join(projectRoot, '.vicem', 'baton.json');
     if (!fs.existsSync(batonPath)) {
-      return { drifted: false, batonHead: null, currentHead: null };
+      return { drifted: false, batonHead: null, currentHead: null, driftedFiles: [] };
     }
     try {
       const baton = JSON.parse(fs.readFileSync(batonPath, 'utf8'));
-      const batonHead = baton?.git?.headCommit;
+      const batonHead = baton?.git?.headCommit || null;
       const git = GitCollector.collect(projectRoot);
-      const currentHead = git.headCommit;
+      const currentHead = git.headCommit || null;
+      const driftedFiles = Array.isArray(git.modifiedFiles) ? git.modifiedFiles : [];
       if (
         batonHead &&
         currentHead &&
@@ -3315,11 +3530,11 @@ export class StalenessDriftGuard {
         !currentHead.startsWith(batonHead) &&
         !batonHead.startsWith(currentHead)
       ) {
-        return { drifted: true, batonHead, currentHead };
+        return { drifted: true, batonHead, currentHead, driftedFiles };
       }
-      return { drifted: false, batonHead, currentHead };
+      return { drifted: false, batonHead, currentHead, driftedFiles };
     } catch {
-      return { drifted: false, batonHead: null, currentHead: null };
+      return { drifted: false, batonHead: null, currentHead: null, driftedFiles: [] };
     }
   }
 }
@@ -3668,15 +3883,16 @@ export class CliLauncherAdapter {
       input: spec.input,
       env: spec.env,
       encoding: 'utf8',
+      timeout: options.timeoutMs ?? (options.headless ? 120000 : undefined),
     });
     return {
-      launched: res.error == null,
-      status: res.status ?? 0,
+      launched: res.error == null && res.status === 0,
+      status: res.status ?? 1,
       error: res.error
         ? res.error.code === 'ENOENT'
           ? `'${spec.command}' not found on PATH`
           : res.error.message
-        : null,
+        : res.status !== 0 ? `Process exited ${res.status === null ? "with signal " + res.signal : "with code " + res.status}` : null,
       spec,
     };
   }
@@ -3685,13 +3901,112 @@ export class CliLauncherAdapter {
 /**
  * Task 5.2: Atomic Rule-File Mount & Byte-Exact Unmount Adapter (SRS C-07 / TC-DELIV-01)
  */
+export class HandoffService {
+  static supportInfo(platform = process.platform) {
+    const windows = platform === 'win32';
+    return {
+      platform,
+      label: windows ? 'Windows Preview' : platform === 'darwin' ? 'macOS' : 'Linux',
+      cli: windows ? 'Windows runtime checks passed under Wine. Native Windows CI pending.' : 'Local automated suite passed.',
+      desktop: 'Desktop auto-launch is best effort; manual continuation is available.',
+      reception: 'Delivery does not confirm that the destination has read the handoff.',
+    };
+  }
+  static manualGuide(projectRoot, targetAgent, platform = process.platform) {
+    const windows = platform === 'win32';
+    const quote = value => windows ? "'" + String(value).replaceAll("'", "''") + "'" : "'" + String(value).replaceAll("'", "'\"'\"'") + "'";
+    const prompt = `Read .vicem/BATON.md in ${projectRoot}. Continue from Section 2 (Immediate NEXT), and report any missing context before making changes.`;
+    const commands = {codex:'codex', claude:'claude', gemini:'gemini', aider:'aider', cursor:'cursor', vscode:'code', windsurf:'windsurf', antigravity:'agy'};
+    const executable = commands[targetAgent];
+    const folderCommand = windows ? `Set-Location -LiteralPath ${quote(projectRoot)}` : `cd ${quote(projectRoot)}`;
+    const ide = ['cursor','vscode','windsurf','antigravity'].includes(targetAgent);
+    const args = targetAgent === 'aider' ? '--read .vicem/BATON.md' : ide ? '.' : quote(prompt);
+    return {
+      targetAgent, shell: windows ? 'PowerShell' : 'Terminal', projectRoot,
+      batonPath: (windows ? path.win32 : path).join(projectRoot, '.vicem', 'BATON.md'),
+      prompt, command: executable ? `${folderCommand}${windows ? '\n' : ' && '}${executable} ${args}` : folderCommand,
+      instructions: executable ? 'Run the command if the destination is installed, or open it manually and paste the start prompt.' : 'Open your destination manually, select this project, and paste the start prompt.',
+      receptionConfirmed: false,
+    };
+  }
+
+  static mount(root, target, baton) {
+    if (!/^baton-[a-zA-Z0-9-]+$/.test(baton.id)) throw new Error('Invalid handoff ID');
+    const { relPath, absPath } = RuleMountAdapter.getRuleFilePath(root, target);
+    if (!AtomicFs.isSafeRepoFilePath(root, relPath)) throw new Error('Unsafe rule path');
+    AtomicFs.ensureVicemDir(root);
+    AtomicFs.acquireLock(root);
+    try {
+      const before = fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf8') : null;
+      const priorBackup = RuleMountAdapter.loadBackups(root)[relPath] || null;
+      const mounted = RuleMountAdapter.mount(root, target, baton.markdown);
+      const after = fs.readFileSync(absPath, 'utf8');
+      AtomicFs.writeFileAtomic(path.join(root, '.vicem', 'undo-' + baton.id + '.json'), JSON.stringify({
+        id: baton.id, relPath, before, priorBackup, afterHash: crypto.createHash('sha256').update(after).digest('hex'), undone: false
+      }));
+      return mounted;
+    } finally { AtomicFs.releaseLock(root); }
+  }
+  static undo(root, id) {
+    if (!/^baton-[a-zA-Z0-9-]+$/.test(id || '')) throw new Error('Specify a valid handoff ID from history');
+    const journal = path.join(root, '.vicem', 'undo-' + id + '.json');
+    if (!fs.existsSync(journal)) throw new Error('No reversible instruction changes for this handoff');
+    AtomicFs.acquireLock(root);
+    try {
+      const entry = JSON.parse(fs.readFileSync(journal, 'utf8'));
+      if (entry.undone) return { status: 'already_undone', id };
+      if (!Object.values(RuleMountAdapter.TARGET_RULE_FILES).includes(entry.relPath) || !AtomicFs.isSafeRepoFilePath(root, entry.relPath)) throw new Error('Unsafe undo path');
+      const file = path.join(root, entry.relPath);
+      const current = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+      if (current === null || crypto.createHash('sha256').update(current).digest('hex') !== entry.afterHash) throw new Error('Instructions changed since this handoff. Nothing was overwritten; review the file before undoing.');
+      if (entry.before === null) fs.unlinkSync(file);
+      else AtomicFs.writeFileAtomic(file, entry.before);
+      const backups = RuleMountAdapter.loadBackups(root);
+      if (entry.priorBackup) backups[entry.relPath] = entry.priorBackup; else delete backups[entry.relPath];
+      AtomicFs.writeFileAtomic(RuleMountAdapter.getBackupRegistryPath(root), JSON.stringify(backups));
+      const history = HandoffService.history(root).map(record => record.id === id ? { ...record, status: 'undone' } : record);
+      AtomicFs.writeFileAtomic(path.join(root, '.vicem', 'handoffs.json'), JSON.stringify(history, null, 2));
+      entry.undone = true;
+      AtomicFs.writeFileAtomic(journal, JSON.stringify(entry));
+      return { status: 'undone', id, restoredFile: entry.relPath, scope: 'handoff instructions only' };
+    } finally { AtomicFs.releaseLock(root); }
+  }
+
+  static prepare(options) {
+    const match = SmartInferenceEngine.resolveTarget(options.targetAgent || 'codex');
+    if (!match.matched || match.via === 'fuzzy') throw new Error('Choose an exact supported target');
+    const budget = Number(options.budgetTokens ?? 4000);
+    if (!Number.isInteger(budget) || budget < 256 || budget > 64000) throw new Error('Budget must be an integer between 256 and 64000');
+    return BatonIaBuilder.build({ ...options, targetAgent: match.matched, budgetTokens: budget });
+  }
+  static history(root) {
+    const file = path.join(root, '.vicem', 'handoffs.json');
+    if (!fs.existsSync(file)) return [];
+    const records = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!Array.isArray(records)) throw new Error('Invalid handoff history');
+    return records;
+  }
+  static record(root, baton, status, detail = '') {
+    AtomicFs.ensureVicemDir(root);
+    AtomicFs.acquireLock(root);
+    try {
+      const records = HandoffService.history(root);
+      const record = { id: baton.id, timestamp: new Date().toISOString(), status,
+        receptionConfirmed: false, detail: SecretRedactor.redact(String(detail)).sanitized };
+      records.push(record);
+      AtomicFs.writeFileAtomic(path.join(root, '.vicem', 'handoffs.json'), JSON.stringify(records.slice(-100), null, 2) + '\n');
+      return record;
+    } finally { AtomicFs.releaseLock(root); }
+  }
+}
+
 export class RuleMountAdapter {
   static START_MARKER = '<!-- VICEM-BATON-START -->';
   static END_MARKER = '<!-- VICEM-BATON-END -->';
 
   static TARGET_RULE_FILES = {
     antigravity: 'AGENTS.md',
-    claude: 'AGENTS.md',
+    claude: 'CLAUDE.md',
     codex: 'AGENTS.md',
     opencode: 'AGENTS.md',
     cursor: '.cursorrules',
@@ -3744,7 +4059,12 @@ export class RuleMountAdapter {
       );
     }
 
-    const baseContent = backups[relPath] ? backups[relPath].originalContent : currentContent;
+    const start = currentContent.indexOf(RuleMountAdapter.START_MARKER);
+    const end = currentContent.indexOf(RuleMountAdapter.END_MARKER);
+    if (start >= 0 && end < start) throw new Error('Incomplete Vicem rule block; restore or repair it before mounting');
+    const baseContent = start >= 0
+      ? currentContent.slice(0, start).replace(/\n$/, '') + currentContent.slice(end + RuleMountAdapter.END_MARKER.length).replace(/^\n/, '')
+      : currentContent;
     const mountBlock = `${RuleMountAdapter.START_MARKER}\n${batonMarkdown.trim()}\n${RuleMountAdapter.END_MARKER}`;
     const separator = baseContent.length > 0 && !baseContent.endsWith('\n') ? '\n\n' : baseContent.length > 0 ? '\n' : '';
     const updatedContent = baseContent + separator + mountBlock + '\n';
@@ -3758,7 +4078,13 @@ export class RuleMountAdapter {
     const backups = RuleMountAdapter.loadBackups(resolvedRoot);
     const targetsToRestore = targetAgent
       ? [RuleMountAdapter.getRuleFilePath(resolvedRoot, targetAgent).relPath]
-      : Object.keys(backups);
+      : [
+          ...new Set([
+            ...Object.keys(backups),
+            ...Object.values(RuleMountAdapter.TARGET_RULE_FILES),
+            'CLAUDE.md',
+          ]),
+        ];
 
     const unmountedFiles = [];
     for (const relPath of targetsToRestore) {
@@ -3770,7 +4096,7 @@ export class RuleMountAdapter {
           if (fs.existsSync(absPath)) {
             const current = fs.readFileSync(absPath, 'utf8');
             const stripped = current
-              .replace(/\n?<!-- VICEM-BATON-START -->[\s\S]*?<!-- VICEM-BATON-END -->\n?/g, '')
+              .replace(/\n?<!-- VICEM-BATON-START -->[\s\S]*<!-- VICEM-BATON-END -->\n?/g, '')
               .trim();
             if (!stripped) {
               fs.unlinkSync(absPath);
@@ -3782,7 +4108,7 @@ export class RuleMountAdapter {
         } else if (fs.existsSync(absPath)) {
           const current = fs.readFileSync(absPath, 'utf8');
           const stripped = current.replace(
-            /\n?<!-- VICEM-BATON-START -->[\s\S]*?<!-- VICEM-BATON-END -->\n?/g,
+            /\n?<!-- VICEM-BATON-START -->[\s\S]*<!-- VICEM-BATON-END -->\n?/g,
             ''
           );
           if (stripped.trim() === (record.originalContent || '').trim()) {
@@ -3801,10 +4127,14 @@ export class RuleMountAdapter {
         const content = fs.readFileSync(absPath, 'utf8');
         if (content.includes(RuleMountAdapter.START_MARKER)) {
           const stripped = content.replace(
-            /\n?<!-- VICEM-BATON-START -->[\s\S]*?<!-- VICEM-BATON-END -->\n?/g,
+            /\n?<!-- VICEM-BATON-START -->[\s\S]*<!-- VICEM-BATON-END -->\n?/g,
             ''
           );
-          AtomicFs.writeFileAtomic(absPath, stripped);
+          if (!stripped.trim()) {
+            fs.unlinkSync(absPath);
+          } else {
+            AtomicFs.writeFileAtomic(absPath, stripped);
+          }
           unmountedFiles.push(relPath);
         }
       }
@@ -4195,7 +4525,7 @@ export class SmartPatchApplier {
 export class WebLandAdapter {
   static extractCodeBlocks(markdownText) {
     const blocks = [];
-    const regex = /```([A-Za-z0-9_+-]*)(?:\s+([^\n`]+))?\n([\s\S]*?)```/g;
+    const regex = /```([A-Za-z0-9_+-]*)(?:[ \t]+([^\n`]+))?\r?\n([\s\S]*?)```/g;
     let match;
     while ((match = regex.exec(String(markdownText ?? ''))) !== null) {
       let fileHint = (match[2] || '').trim() || null;
@@ -4772,6 +5102,10 @@ export class PtyWrapController {
         },
       });
 
+      child.once('error', error => {
+        inspector.dispose();
+        resolve({ wrapped: false, exitCode: error.code === 'ENOENT' ? 127 : 1, error: error.message, fallbackTarget });
+      });
       child.stdout?.on('data', (chunk) => inspector.pushChunk(chunk));
       child.stderr?.on('data', (chunk) => inspector.pushChunk(chunk));
 
@@ -5207,7 +5541,7 @@ export class DoctorDiagnostics {
 }
 
 export class VicemApp {
-  static HELP_TEXT = `Vicem (v5.3) — Zero-Dependency AI Agent Context Baton & Diet Suite
+  static HELP_TEXT = `Vicem (v1.1.2) — Zero-Dependency AI Agent Context Baton & Diet Suite
 
 Usage (Tier 1 — Daily Zero-Config Commands):
   vicem                   Auto-detect active session & pass baton to recommended target
@@ -5243,6 +5577,10 @@ Options:
   --dry-run               Build baton and print receipt without launching external binary
   --uninstall             Remove Vicem pre-commit hook cleanly when used with 'vicem init'
   --profile <dir>         Custom profile directory for multi-account relay (UC-08)
+  --preview              Preview target baton without writes or launch
+  --json                 Structured result output
+  status / history       Inspect recent handoff outcomes
+  undo <handoff-id>      Undo instruction changes if the file is unchanged
   --help, -h              Show this help message`;
 
   static parseCliArgs(argv = process.argv.slice(2)) {
@@ -5259,7 +5597,20 @@ Options:
 
     for (let i = 0; i < argv.length; i++) {
       const arg = argv[i];
-      if (arg === '--help' || arg === '-h') {
+      if (positional[0] === 'wrap' && positional.length >= 2) {
+        if (arg === '--') { positional.push(...argv.slice(i + 1)); break; }
+        if (arg === '--dry-run') flags.dryRun = true; else positional.push(arg);
+        continue;
+      }
+      if (arg === '--goal' && argv[i + 1] && !argv[i + 1].startsWith('--')) {
+        flags.goal = argv[++i];
+      } else if (arg.startsWith('--goal=')) {
+        flags.goal = arg.slice(7);
+      } else if (arg === '--preview') {
+        flags.preview = true;
+      } else if (arg === '--json') {
+        flags.json = true;
+      } else if (arg === '--help' || arg === '-h') {
         flags.help = true;
       } else if (arg === '--headless') {
         flags.headless = true;
@@ -5268,15 +5619,25 @@ Options:
       } else if (arg === '--uninstall') {
         flags.uninstall = true;
       } else if (arg === '--budget' && argv[i + 1]) {
-        flags.budgetTokens = parseInt(argv[++i], 10) || 4000;
+        const parsed = parseInt(argv[++i], 10);
+        flags.budgetTokens = Number.isFinite(parsed) && parsed > 0 ? parsed : 4000;
+      } else if (arg.startsWith('--budget=')) {
+        const parsed = parseInt(arg.slice('--budget='.length), 10);
+        flags.budgetTokens = Number.isFinite(parsed) && parsed > 0 ? parsed : 4000;
       } else if (arg === '--profile' && argv[i + 1]) {
         flags.profile = argv[++i];
+      } else if (arg.startsWith('--profile=')) {
+        flags.profile = arg.slice('--profile='.length) || null;
       } else if (arg === '--role' && argv[i + 1]) {
         flags.role = argv[++i];
+      } else if (arg.startsWith('--role=')) {
+        flags.role = arg.slice('--role='.length) || null;
       } else if (arg === '--mcp') {
         positional.unshift('mcp');
       } else if (!arg.startsWith('-')) {
         positional.push(arg);
+      } else {
+        (flags.errors ||= []).push('Unknown or incomplete option: ' + arg);
       }
     }
 
@@ -5289,6 +5650,35 @@ Options:
     const outStream = options.stdout || process.stdout;
     const { positional, flags } = VicemApp.parseCliArgs(argv);
 
+    if (flags.errors?.length) {
+      outStream.write(JSON.stringify({ error: flags.errors.join('; '), exitCode: 2 }) + '\n');
+      return { exitCode: 2, mode: 'invalid_arguments' };
+    }
+    if (positional[0] === 'undo') {
+      try { const result = HandoffService.undo(projectRoot, positional[1]); outStream.write(JSON.stringify(result) + '\n'); return {exitCode: 0, result}; }
+      catch (error) { outStream.write(JSON.stringify({error:error.message}) + '\n'); return {exitCode: 1}; }
+    }
+    if (['history', 'status'].includes(positional[0])) {
+      const records = HandoffService.history(projectRoot);
+      const result = positional[0] === 'status' ? (records.at(-1) || { status: 'no_handoffs' }) : records;
+      outStream.write(JSON.stringify(result, null, flags.json ? 0 : 2) + '\n');
+      return { exitCode: 0, mode: positional[0], result };
+    }
+    if (flags.preview) {
+      const match = SmartInferenceEngine.resolveTarget(positional[0] || 'codex');
+      if (!match.matched) { outStream.write('Unknown target\n'); return { exitCode: 2 }; }
+      const detected = await SmartInferenceEngine.autoDetectSource(projectRoot, env);
+      const session = detected.harvester ? await detected.harvester.harvestSession() : null;
+      const git = GitCollector.collect(projectRoot);
+      const baton = HandoffService.prepare({ projectRoot, sourceAgent: detected.agent || 'git', targetAgent: match.matched, taskContext: DeterministicTaskExtractor.extract(session?.rawEvents || [], git), gitContext: git, budgetTokens: flags.budgetTokens, persist: false });
+      outStream.write(flags.json ? JSON.stringify({ status: 'preview', receptionConfirmed: false, ...baton.json, markdown: baton.markdown }) + '\n' : baton.markdown + '\n');
+      return { exitCode: 0, mode: 'preview', baton };
+    }
+    if (flags.json) {
+      const result = await VicemApp.run(argv.filter(arg => arg !== '--json'), { ...options, stdout: { write() {} } });
+      outStream.write(JSON.stringify(result) + '\n');
+      return result;
+    }
     if (flags.help) {
       outStream.write(VicemApp.HELP_TEXT + '\n');
       return { exitCode: 0, mode: 'help' };
@@ -5352,6 +5742,7 @@ Options:
       const session = detected.harvester ? await detected.harvester.harvestSession() : null;
       const git = GitCollector.collect(projectRoot);
       const task = DeterministicTaskExtractor.extract(session?.rawEvents || [], git);
+    if (flags.goal) { task.goal = flags.goal; task.immediateNext = [flags.goal]; }
 
       const baton = BatonIaBuilder.build({
         projectRoot,
@@ -5423,6 +5814,7 @@ Options:
       const session = detected.harvester ? await detected.harvester.harvestSession() : null;
       const git = GitCollector.collect(projectRoot);
       const task = DeterministicTaskExtractor.extract(session?.rawEvents || [], git);
+    if (flags.goal) { task.goal = flags.goal; task.immediateNext = [flags.goal]; }
       const okBadge = UxFormatter.isNoColor(env) ? '[OK]' : '✓';
       outStream.write(
         `${okBadge} [Vicem Harvest] Source: ${detected.agent} | Goal: ${task.goal} | Done: ${task.done.length} | Next: ${task.immediateNext.length}\n`
@@ -5472,7 +5864,7 @@ Options:
         stdout: outStream,
         dryRun: flags.dryRun || options.skipLaunch,
       });
-      return { exitCode: 0, mode: 'wrap', result: res };
+      return { exitCode: res.intercepted ? 0 : (res.exitCode ?? 0), mode: 'wrap', result: res };
     }
 
     // 10. Web Studio (`vicem studio` — Fix 11-A & CRIT-04: harvests active session for hydration)
@@ -5498,6 +5890,7 @@ Options:
         const session = detected.harvester ? await detected.harvester.harvestSession() : null;
         const git = GitCollector.collect(projectRoot);
         const task = DeterministicTaskExtractor.extract(session?.rawEvents || [], git);
+    if (flags.goal) { task.goal = flags.goal; task.immediateNext = [flags.goal]; }
         const hydrated = StudioHydrationAdapter.generateLiveStudioHtml(projectRoot, studioHtmlPath, {
           targetAgent: positional[1] || 'codex',
           gitContext: git,
@@ -5556,6 +5949,7 @@ Options:
       const session = detected.harvester ? await detected.harvester.harvestSession() : null;
       const git = GitCollector.collect(projectRoot);
       const task = DeterministicTaskExtractor.extract(session?.rawEvents || [], git);
+    if (flags.goal) { task.goal = flags.goal; task.immediateNext = [flags.goal]; }
       const baton = BatonIaBuilder.build({
         projectRoot,
         sourceAgent: detected.agent,
@@ -5575,7 +5969,7 @@ Options:
     if (subcmd === 'fan-out') {
       const targets = (positional[1] || 'codex,claude')
         .split(',')
-        .map((s) => s.trim())
+        .map((s) => s.trim().replace(/[^a-zA-Z0-9_-]/g, ''))
         .filter(Boolean);
       const detected = await SmartInferenceEngine.autoDetectSource(projectRoot, env);
       const git = GitCollector.collect(projectRoot);
@@ -5605,7 +5999,7 @@ Options:
       const vicemDir = AtomicFs.ensureVicemDir(projectRoot);
       const files = fs
         .readdirSync(vicemDir)
-        .filter((f) => f.startsWith('BATON.') && f.endsWith('.md'));
+        .filter((f) => f !== 'BATON.md' && f.startsWith('BATON.') && f.endsWith('.md'));
       const combined = files
         .map((f) => `<!-- SOURCE: ${f} -->\n` + fs.readFileSync(path.join(vicemDir, f), 'utf8'))
         .join('\n\n---\n\n');
@@ -5624,6 +6018,7 @@ Options:
       const session = detected.harvester ? await detected.harvester.harvestSession() : null;
       const git = GitCollector.collect(projectRoot);
       const task = DeterministicTaskExtractor.extract(session?.rawEvents || [], git);
+    if (flags.goal) { task.goal = flags.goal; task.immediateNext = [flags.goal]; }
       const baton = BatonIaBuilder.build({
         projectRoot,
         sourceAgent: detected.agent,
@@ -5690,6 +6085,7 @@ Options:
     const session = detected.harvester ? await detected.harvester.harvestSession() : null;
     const git = GitCollector.collect(projectRoot);
     const task = DeterministicTaskExtractor.extract(session?.rawEvents || [], git);
+    if (flags.goal) { task.goal = flags.goal; task.immediateNext = [flags.goal]; }
 
     if (session?.sessionId) {
       SessionHistoryStack.pushSession(projectRoot, {
@@ -5698,7 +6094,7 @@ Options:
       });
     }
 
-    const baton = BatonIaBuilder.build({
+    const baton = HandoffService.prepare({
       projectRoot,
       sourceAgent,
       targetAgent,
@@ -5719,7 +6115,7 @@ Options:
     let deliveryInfo = {};
 
     if (ideTargets.has(targetAgent)) {
-      const mountRes = RuleMountAdapter.mount(projectRoot, targetAgent, baton.markdown);
+      const mountRes = HandoffService.mount(projectRoot, targetAgent, baton);
       baton.json.target.mountedRuleFile = mountRes.relPath;
       AtomicFs.writeFileAtomic(baton.batonJsonPath, JSON.stringify(baton.json, null, 2) + '\n');
       if (!flags.dryRun && !options.skipLaunch) {
@@ -5763,10 +6159,14 @@ Options:
       });
       if (deliveryInfo.error) {
         outStream.write(`[ERR] [Vicem] Failed to launch '${effectiveCli}': ${deliveryInfo.error}.\n`);
-        return { exitCode: 1, mode: 'launch_failed', sourceAgent, targetAgent, baton, deliveryInfo, receipt };
+        const manualContinuation = HandoffService.manualGuide(projectRoot, effectiveCli);
+        outStream.write(`Handoff saved: ${manualContinuation.batonPath}\nContinue manually (${manualContinuation.shell}):\n${manualContinuation.command}\nStart prompt: ${manualContinuation.prompt}\n`);
+        HandoffService.record(projectRoot, baton, 'partial', deliveryInfo.error);
+        return { exitCode: 1, mode: 'launch_failed', sourceAgent, targetAgent, baton, deliveryInfo, receipt, manualContinuation };
       }
     }
 
+    HandoffService.record(projectRoot, baton, flags.dryRun || options.skipLaunch ? 'prepared' : 'delivered', 'Reception unconfirmed');
     return {
       exitCode: 0,
       mode: 'handoff',
