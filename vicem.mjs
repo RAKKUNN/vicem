@@ -4699,46 +4699,108 @@ export class McpServerAdapter {
       {
         name: 'vicem_create_baton',
         description:
-          'Creates a compressed U-Shaped Context Baton (.vicem/BATON.md) from the current project and git/session state.',
+          'Creates a compressed U-Shaped Context Baton (.vicem/BATON.md) and symbol rehydration ledger (.vicem/ledger.json) from the active project session and git state. Use when handing off work to another AI agent or compacting context before hitting quota limits; do not use merely to read an existing baton (call vicem_read_baton instead). Writes .vicem/BATON.md and .vicem/ledger.json locally with automatic secret redaction, leaves source files untouched, and returns the generated Markdown baton.',
+        annotations: {
+          title: 'Create Context Baton',
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
         inputSchema: {
           type: 'object',
           properties: {
-            goal: { type: 'string', description: 'Primary engineering goal' },
-            targetAgent: { type: 'string', description: 'Target agent identifier (e.g., codex, claude, ide)' },
-            budgetTokens: { type: 'number', description: 'Token budget (default: 4000)' },
+            goal: {
+              type: 'string',
+              description:
+                'Optional explicit engineering goal override (e.g., "Fix JWT refresh race in src/auth.ts"). If omitted, automatically inferred from active session history and git diff.',
+            },
+            targetAgent: {
+              type: 'string',
+              enum: ['claude', 'codex', 'cursor', 'antigravity', 'gemini', 'windsurf', 'vscode', 'web', 'ide'],
+              default: 'codex',
+              description:
+                'Target AI coding agent identifier used to tailor handoff headers (default: "codex").',
+            },
+            budgetTokens: {
+              type: 'number',
+              minimum: 500,
+              maximum: 128000,
+              default: 4000,
+              description:
+                'Target maximum token budget for the compressed .vicem/BATON.md output (default: 4000, range: 500-128000).',
+            },
           },
+          additionalProperties: false,
         },
       },
       {
         name: 'vicem_read_baton',
-        description: 'Reads the current .vicem/BATON.md and checks for git HEAD drift.',
+        description:
+          'Reads the current .vicem/BATON.md handoff document and checks whether git HEAD has drifted since baton creation. Use at the start of a handed-off or resumed coding session to load the goal, immediate next steps, and Diet Ledger index; do not use to generate a new baton (call vicem_create_baton instead). Read-only operation with zero file changes; returns the Markdown baton (with a drift warning banner if git HEAD changed) or isError=true if .vicem/BATON.md does not exist.',
+        annotations: {
+          title: 'Read Context Baton',
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
         inputSchema: {
           type: 'object',
           properties: {},
+          additionalProperties: false,
         },
       },
       {
         name: 'vicem_rehydrate',
         description:
-          'Restores the exact, secret-redacted source code of a skeletonized function/class from .vicem/ledger.json so you never write { ... } placeholders.',
+          'Restores the exact, secret-redacted source code body of a skeletonized function, method, or class from .vicem/ledger.json so you never write { ... } placeholders. Use before editing or inspecting any symbol listed in Section 6 (Diet Ledger) of .vicem/BATON.md; do not guess skeletonized implementations or write placeholder bodies to disk. Read-only lookup that prepends a staleness warning comment if git HEAD or the disk file changed since snapshot, or returns isError=true if the symbol is not found.',
+        annotations: {
+          title: 'Rehydrate Skeletonized Symbol',
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
         inputSchema: {
           type: 'object',
           properties: {
-            file_path: { type: 'string', description: 'Relative file path (e.g. src/auth.ts)' },
-            symbol_name: { type: 'string', description: 'Function, method, or class name (e.g. verifyJwt)' },
+            file_path: {
+              type: 'string',
+              description:
+                'Repository-relative POSIX file path exactly as indexed in .vicem/BATON.md Section 6 (e.g., "src/auth.ts" or "vicem.mjs").',
+            },
+            symbol_name: {
+              type: 'string',
+              description:
+                'Exact function, method, or class identifier to restore from .vicem/ledger.json (e.g., "verifyJwt" or "parseCFamily").',
+            },
           },
           required: ['file_path', 'symbol_name'],
+          additionalProperties: false,
         },
       },
       {
         name: 'vicem_check_guard',
         description:
-          'Verifies code or git diff against SkeletonWriteGuard, SecretCommitGuard, and StalenessDriftGuard.',
+          'Verifies a code snippet or the current git working tree diff against SkeletonWriteGuard, SecretCommitGuard, and StalenessDriftGuard. Use before committing or finalizing file edits after a baton handoff to ensure no skeleton placeholders ({ /* ... */ }), redacted tokens (‹REDACTED:...›), or raw secrets were introduced. Read-only check (does not modify files); returns "OK: All 3 Safety Guards passed." when clean, or isError=true with actionable remediation steps on violation.',
+        annotations: {
+          title: 'Check Safety Guards',
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
         inputSchema: {
           type: 'object',
           properties: {
-            diff_text: { type: 'string', description: 'Optional diff or code text to inspect' },
+            diff_text: {
+              type: 'string',
+              description:
+                'Optional unified git diff or source code snippet to inspect directly. If omitted, inspects the live git working tree diff of the project.',
+            },
           },
+          additionalProperties: false,
         },
       },
     ];
