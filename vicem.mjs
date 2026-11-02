@@ -4699,7 +4699,7 @@ export class McpServerAdapter {
       {
         name: 'vicem_create_baton',
         description:
-          'Creates a compressed U-Shaped Context Baton (.vicem/BATON.md) and symbol rehydration ledger (.vicem/ledger.json) from the active project session and git state. Use when handing off work to another AI agent or compacting context before hitting quota limits; do not use merely to read an existing baton (call vicem_read_baton instead). Writes .vicem/BATON.md and .vicem/ledger.json locally with automatic secret redaction, leaves source files untouched, and returns the generated Markdown baton.',
+          'Creates a compressed U-Shaped Context Baton (.vicem/BATON.md) and symbol ledger (.vicem/ledger.json) from the current project session and git state. Use at session end or before quota limits to hand off work; do not use to read an existing baton (vicem_read_baton), restore a skeletonized function (vicem_rehydrate), or validate edits (vicem_check_guard). Compresses context by skeletonizing unchanged functions >=12 lines into .vicem/ledger.json while keeping signatures intact. Idempotently overwrites .vicem/BATON.md, .vicem/baton.json, and .vicem/ledger.json after saving a rollback snapshot in .vicem/snapshots/, with secret redaction and zero source file mutations (no auth or rate limits). Parameter semantics: goal overrides auto-extracted session intent in Section 1; targetAgent tailors receiver rules (default "codex"); budgetTokens (500-128000, default 4000) controls skeletonization depth. Returns the generated Markdown baton (isError=false).',
         annotations: {
           title: 'Create Context Baton',
           readOnlyHint: false,
@@ -4713,14 +4713,14 @@ export class McpServerAdapter {
             goal: {
               type: 'string',
               description:
-                'Optional explicit engineering goal override (e.g., "Fix JWT refresh race in src/auth.ts"). If omitted, automatically inferred from active session history and git diff.',
+                'Optional explicit engineering goal override for Section 1 (e.g., "Fix JWT refresh race in src/auth.ts"). If omitted, inferred from active session history and git diff.',
             },
             targetAgent: {
               type: 'string',
               enum: ['claude', 'codex', 'cursor', 'antigravity', 'gemini', 'windsurf', 'vscode', 'web', 'ide'],
               default: 'codex',
               description:
-                'Target AI coding agent identifier used to tailor handoff headers (default: "codex").',
+                'Destination AI coding agent identifier used to format receiver instructions (default: "codex").',
             },
             budgetTokens: {
               type: 'number',
@@ -4728,7 +4728,7 @@ export class McpServerAdapter {
               maximum: 128000,
               default: 4000,
               description:
-                'Target maximum token budget for the compressed .vicem/BATON.md output (default: 4000, range: 500-128000).',
+                'Maximum token budget governing how aggressively Tier 3/4 context files are skeletonized (default: 4000, range: 500-128000).',
             },
           },
           additionalProperties: false,
@@ -4737,7 +4737,7 @@ export class McpServerAdapter {
       {
         name: 'vicem_read_baton',
         description:
-          'Reads the current .vicem/BATON.md handoff document and checks whether git HEAD has drifted since baton creation. Use at the start of a handed-off or resumed coding session to load the goal, immediate next steps, and Diet Ledger index; do not use to generate a new baton (call vicem_create_baton instead). Read-only operation with zero file changes; returns the Markdown baton (with a drift warning banner if git HEAD changed) or isError=true if .vicem/BATON.md does not exist.',
+          'Reads the current .vicem/BATON.md handoff document and checks whether git HEAD has drifted from .vicem/baton.json. Use first when starting a handed-off session to inspect the goal, next steps, and Section 6 Diet Ledger index; do not use to create a baton (vicem_create_baton), restore an individual function body (vicem_rehydrate), or validate code diffs (vicem_check_guard). Read-only local operation (no auth, rate limits, or file mutations). Returns the full BATON.md text with isError=false; if git HEAD moved ahead of the baton commit, the call still succeeds and prepends a "> ⚠️ [STALENESS DRIFT WARNING]" banner with both commit hashes so you can check git diff before editing. Returns isError=true if .vicem/BATON.md does not exist.',
         annotations: {
           title: 'Read Context Baton',
           readOnlyHint: true,
@@ -4754,7 +4754,7 @@ export class McpServerAdapter {
       {
         name: 'vicem_rehydrate',
         description:
-          'Restores the exact, secret-redacted source code body of a skeletonized function, method, or class from .vicem/ledger.json so you never write { ... } placeholders. Use before editing or inspecting any symbol listed in Section 6 (Diet Ledger) of .vicem/BATON.md; do not guess skeletonized implementations or write placeholder bodies to disk. Read-only lookup that prepends a staleness warning comment if git HEAD or the disk file changed since snapshot, or returns isError=true if the symbol is not found.',
+          'Restores the exact, secret-redacted source code of a skeletonized function, method, or class from .vicem/ledger.json so you never write { ... } placeholders. Use after vicem_read_baton whenever you need to inspect or edit a symbol listed in .vicem/BATON.md Section 6 (Diet Ledger); do not use to read the full baton (vicem_read_baton), build a baton (vicem_create_baton), or check diff safety (vicem_check_guard). Parameter semantics: file_path (repo-relative POSIX path validated against path traversal) and symbol_name must match a ledger entry (camelCase filePath/symbolName aliases also accepted). Read-only lookup (no auth, rate limits, or disk writes): returns the redacted source code (isError=false), prepending a "// ⚠️ [STALENESS DRIFT WARNING]" comment if git HEAD or the on-disk file changed since snapshot. If the symbol is missing or was not skeletonized, returns isError=true with a not-found message so you can read the file directly.',
         annotations: {
           title: 'Rehydrate Skeletonized Symbol',
           readOnlyHint: true,
@@ -4768,12 +4768,12 @@ export class McpServerAdapter {
             file_path: {
               type: 'string',
               description:
-                'Repository-relative POSIX file path exactly as indexed in .vicem/BATON.md Section 6 (e.g., "src/auth.ts" or "vicem.mjs").',
+                'Repository-relative POSIX file path as listed in .vicem/BATON.md Section 6 (e.g., "src/auth.ts" or "vicem.mjs").',
             },
             symbol_name: {
               type: 'string',
               description:
-                'Exact function, method, or class identifier to restore from .vicem/ledger.json (e.g., "verifyJwt" or "parseCFamily").',
+                'Exact function, method, or class name to restore from .vicem/ledger.json (e.g., "verifyJwt" or "parseCFamily").',
             },
           },
           required: ['file_path', 'symbol_name'],
@@ -4783,7 +4783,7 @@ export class McpServerAdapter {
       {
         name: 'vicem_check_guard',
         description:
-          'Verifies a code snippet or the current git working tree diff against SkeletonWriteGuard, SecretCommitGuard, and StalenessDriftGuard. Use before committing or finalizing file edits after a baton handoff to ensure no skeleton placeholders ({ /* ... */ }), redacted tokens (‹REDACTED:...›), or raw secrets were introduced. Read-only check (does not modify files); returns "OK: All 3 Safety Guards passed." when clean, or isError=true with actionable remediation steps on violation.',
+          'Verifies a code snippet or git diff against three safety checks: (1) SkeletonWriteGuard (blocks "{ ... }", "/* ... */", "⋮", or stub "pass" placeholders written into code files), (2) SecretCommitGuard (blocks raw API keys/credentials, leaked "‹REDACTED:...›" tokens, and baton markers), and (3) StalenessDriftGuard (flags git HEAD drift from .vicem/baton.json). Use before committing or finalizing edits to skeletonized files; do not use to read baton state (vicem_read_baton) or restore elided code (vicem_rehydrate). Parameter semantics: pass diff_text to inspect a specific unified diff or code snippet; omitting diff_text falls back to inspecting staged and unstaged working tree changes (git diff HEAD). Non-mutating read-only check (no auth, rate limits, or file overwrites): returns "OK: All 3 Safety Guards passed." (isError=false) when clean, or isError=true with per-violation findings and self-healing remediation prompts when a guard trips.',
         annotations: {
           title: 'Check Safety Guards',
           readOnlyHint: true,
@@ -4797,7 +4797,7 @@ export class McpServerAdapter {
             diff_text: {
               type: 'string',
               description:
-                'Optional unified git diff or source code snippet to inspect directly. If omitted, inspects the live git working tree diff of the project.',
+                'Optional unified git diff or raw code snippet to validate. When omitted, defaults to inspecting live working tree and staged changes against HEAD (git diff HEAD).',
             },
           },
           additionalProperties: false,
