@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="relay">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+  <title>Vicem — Pass the Baton. Keep the Run.</title>
+  <meta name="description" content="Zero-Dependency AI Agent Context Baton & Diet Suite. Compact sessions by 80–99% across Claude Code, Codex, Cursor, Windsurf & Antigravity." />
+  <meta property="og:title" content="Vicem — Pass the Baton. Keep the Run." />
+  <meta property="og:description" content="Compact AI coding sessions by 80–99% and hand off across Claude Code, Codex, Cursor & Antigravity in 3s." />
+  <meta property="og:image" content="https://rakkunn.github.io/vicem/logo.png" />
+  <link rel="icon" href="./logo.png" />
+  <style>
+    :root[data-theme="relay"] {
+      --bg: #F4EFE6;
+      --bg-grad: radial-gradient(circle at 50% 0%, #FFFDF8 0%, #F4EFE6 65%, #EAE1D3 100%);
+      --card: rgba(255, 253, 248, 0.88);
+      --card-hover: #FFFFFF;
+      --card-featured: #1F1A17;
+      --card-featured-text: #FFF9F0;
+      --text: #1F1A17;
+      --text-sub: #6B625A;
+      --border: rgba(31, 26, 23, 0.12);
+      --border-strong: rgba(31, 26, 23, 0.24);
+      --gold: #D2A13F;
+      --gold-cap: #A47B2B;
+      --gold-hi: #E6C16E;
+      --code-bg: #1F1A17;
+      --code-text: #FFF9F0;
+      --shadow: 0 10px 28px -8px rgba(31, 26, 23, 0.08), 0 2px 6px rgba(31, 26, 23, 0.04);
+      --logo-light-display: block;
+      --logo-dark-display: none;
+    }
+
+    :root[data-theme="dark"] {
+      --bg: #09090B;
+      --bg-grad: radial-gradient(circle at 50% 0%, #18181D 0%, #09090B 70%);
+      --card: rgba(24, 24, 28, 0.88);
+      --card-hover: #202026;
+      --card-featured: #FAFAFA;
+      --card-featured-text: #09090B;
+      --text: #FAFAFA;
+      --text-sub: #A1A1AA;
+      --border: rgba(255, 255, 255, 0.1);
+      --border-strong: rgba(255, 255, 255, 0.22);
+      --gold: #D2A13F;
+      --gold-cap: #9E7627;
+      --gold-hi: #EAD084;
+      --code-bg: #121216;
+      --code-text: #F4F4F5;
+      --shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.5);
+      --logo-light-display: none;
+      --logo-dark-display: block;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      min-height: 100dvh;
+      background: var(--bg);
+      background-image: var(--bg-grad);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Pretendard", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px 16px 44px;
+      transition: background 0.25s ease, color 0.25s ease;
+    }
+
+    .shell {
+      width: 100%;
+      max-width: 440px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* Top utility bar */
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 2px;
+    }
+
+    .pill-group {
+      display: inline-flex;
+      gap: 6px;
+    }
+
+    .util-btn {
+      background: var(--card);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      box-shadow: var(--shadow);
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+
+    .util-btn:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-1px);
+    }
+
+    /* Hero Lockup (matches 9:16 Godot end-card) */
+    .hero {
+      text-align: center;
+      padding: 14px 12px 6px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .brand-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 4px;
+    }
+
+    .brand-logo {
+      width: 52px;
+      height: 52px;
+      object-fit: contain;
+    }
+
+    .logo-light { display: var(--logo-light-display); }
+    .logo-dark { display: var(--logo-dark-display); }
+
+    .brand-word {
+      font-size: 46px;
+      font-weight: 800;
+      letter-spacing: -1.8px;
+      line-height: 1;
+    }
+
+    /* Gold Relay Baton Bar */
+    .baton-bar {
+      width: 210px;
+      height: 11px;
+      background: var(--gold);
+      border-radius: 999px;
+      position: relative;
+      overflow: hidden;
+      margin: 4px 0 12px 26px;
+      box-shadow: 0 3px 10px rgba(210, 161, 63, 0.32);
+    }
+
+    .baton-bar::before,
+    .baton-bar::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 24px;
+      background: var(--gold-cap);
+    }
+
+    .baton-bar::before { left: 0; border-radius: 999px 0 0 999px; }
+    .baton-bar::after { right: 0; border-radius: 0 999px 999px 0; }
+
+    .baton-hi {
+      position: absolute;
+      left: 28px;
+      right: 28px;
+      top: 2px;
+      height: 2px;
+      background: var(--gold-hi);
+      border-radius: 999px;
+    }
+
+    .tagline {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.3px;
+      margin-bottom: 6px;
+    }
+
+    .subcopy {
+      font-size: 13.5px;
+      line-height: 1.48;
+      color: var(--text-sub);
+      max-width: 360px;
+    }
+
+    /* Runner Team Badges */
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .badge {
+      font-size: 11.5px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 999px;
+      color: #FFF9F0;
+      letter-spacing: -0.1px;
+    }
+
+    .b-t0 { background: #C9643F; }
+    .b-t1 { background: #2F7D6A; }
+    .b-t2 { background: #3B67B8; }
+    .b-t3 { background: #3A3F47; }
+
+    /* Quick Terminal Copy Box */
+    .cmd-card {
+      background: var(--code-bg);
+      color: var(--code-text);
+      border-radius: 16px;
+      padding: 12px 14px;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--border);
+    }
+
+    .cmd-tabs {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+
+    .cmd-tab {
+      background: rgba(255, 255, 255, 0.08);
+      color: rgba(255, 249, 240, 0.72);
+      border: none;
+      border-radius: 8px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .cmd-tab.active {
+      background: var(--gold);
+      color: #1F1A17;
+    }
+
+    .cmd-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 13px;
+      background: rgba(0, 0, 0, 0.28);
+      padding: 9px 11px;
+      border-radius: 10px;
+    }
+
+    .cmd-text {
+      overflow-x: auto;
+      white-space: nowrap;
+      scrollbar-width: none;
+    }
+
+    .cmd-text::-webkit-scrollbar { display: none; }
+
+    .copy-btn {
+      background: var(--gold);
+      color: #1F1A17;
+      border: none;
+      border-radius: 8px;
+      padding: 5px 10px;
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: transform 0.12s ease;
+    }
+
+    .copy-btn:active {
+      transform: scale(0.95);
+    }
+
+    /* Link Cards */
+    .links {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .link-card {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      text-decoration: none;
+      background: var(--card);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 14px 16px;
+      box-shadow: var(--shadow);
+      transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.16s ease, background 0.16s ease;
+    }
+
+    .link-card:hover {
+      transform: translateY(-2px);
+      background: var(--card-hover);
+      border-color: var(--border-strong);
+    }
+
+    .link-card.featured {
+      background: var(--card-featured);
+      color: var(--card-featured-text);
+      border-color: transparent;
+    }
+
+    .link-card.featured .link-sub {
+      color: rgba(255, 249, 240, 0.72);
+    }
+
+    :root[data-theme="dark"] .link-card.featured .link-sub {
+      color: rgba(9, 9, 11, 0.68);
+    }
+
+    .link-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 11px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      background: rgba(210, 161, 63, 0.15);
+      color: var(--gold-cap);
+    }
+
+    .link-card.featured .link-icon {
+      background: var(--gold);
+      color: #1F1A17;
+    }
+
+    .link-body {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .link-title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.2px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .link-tag {
+      font-size: 10.5px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--gold);
+      color: #1F1A17;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .link-sub {
+      font-size: 12.5px;
+      line-height: 1.35;
+      color: var(--text-sub);
+      margin-top: 3px;
+    }
+
+    .link-arrow {
+      opacity: 0.45;
+      flex-shrink: 0;
+      transition: transform 0.16s ease, opacity 0.16s ease;
+    }
+
+    .link-card:hover .link-arrow {
+      transform: translateX(3px);
+      opacity: 0.9;
+    }
+
+    footer {
+      margin-top: 12px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-sub);
+    }
+
+    [data-lang="ko"] { display: none; }
+    html[lang="ko"] [data-lang="en"] { display: none; }
+    html[lang="ko"] [data-lang="ko"] { display: inline; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <!-- Top bar -->
+    <div class="topbar">
+      <div class="pill-group">
+        <button class="util-btn" id="langBtn" type="button" aria-label="Toggle Language">
+          🌐 <span id="langLabel">한국어</span>
+        </button>
+      </div>
+      <div class="pill-group">
+        <button class="util-btn" id="themeBtn" type="button" aria-label="Toggle Theme">
+          ✨ <span id="themeLabel">Dark Mode</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Brand Lockup -->
+    <section class="hero">
+      <div class="brand-row">
+        <img class="brand-logo logo-light" src="./logo-light-transparent.png" alt="Vicem Logo" />
+        <img class="brand-logo logo-dark" src="./logo-dark-transparent.png" alt="Vicem Logo" />
+        <h1 class="brand-word">Vicem</h1>
+      </div>
+      <div class="baton-bar" aria-hidden="true"><div class="baton-hi"></div></div>
+
+      <p class="tagline">
+        <span data-lang="en">Pass the baton. Keep the run.</span>
+        <span data-lang="ko">세션은 다이어트하고, 바통만 넘기세요.</span>
+      </p>
+      <p class="subcopy">
+        <span data-lang="en">Compact AI coding context by <strong>80–99%</strong> &amp; hand off across Claude Code, Codex, Cursor, Windsurf &amp; Antigravity in 3s.</span>
+        <span data-lang="ko">AI 코딩 세션을 <strong>80~99% 무손실 압축</strong>하여 Claude Code, Codex, Cursor, Antigravity 간 3초 만에 바통 터치합니다.</span>
+      </p>
+
+      <div class="badges">
+        <span class="badge b-t0">-80~99% Tokens</span>
+        <span class="badge b-t1">0 Dependencies</span>
+        <span class="badge b-t2">0 Network Calls</span>
+        <span class="badge b-t3">MIT Open Source</span>
+      </div>
+    </section>
+
+    <!-- 1-Tap Terminal Quick Start -->
+    <section class="cmd-card" aria-label="Quick Start Command">
+      <div class="cmd-tabs">
+        <button class="cmd-tab active" type="button" data-cmd="npx -y vicem-cli gui">GUI Handoff</button>
+        <button class="cmd-tab" type="button" data-cmd="npx -y vicem-cli codex">→ Codex</button>
+        <button class="cmd-tab" type="button" data-cmd="npx -y vicem-cli claude">→ Claude</button>
+        <button class="cmd-tab" type="button" data-cmd="claude mcp add vicem -- npx -y vicem-cli mcp">+ MCP</button>
+      </div>
+      <div class="cmd-row">
+        <code class="cmd-text" id="cmdText">$ npx -y vicem-cli gui</code>
+        <button class="copy-btn" id="copyBtn" type="button">
+          <span data-lang="en">Copy</span>
+          <span data-lang="ko">복사</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Linktree Buttons -->
+    <nav class="links" aria-label="Vicem Links">
+      <a class="link-card featured" href="https://github.com/RAKKUNN/vicem" target="_blank" rel="noopener noreferrer">
+        <div class="link-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.09 3.29 9.4 7.86 10.92.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.38-3.88-1.38-.52-1.33-1.28-1.68-1.28-1.68-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.12 3.05.74.81 1.18 1.83 1.18 3.09 0 4.42-2.69 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z"/></svg>
+        </div>
+        <div class="link-body">
+          <div class="link-title">
+            <span>GitHub — RAKKUNN/vicem</span>
+            <span class="link-tag">★ Star</span>
+          </div>
+          <div class="link-sub">
+            <span data-lang="en">Source code, 10s quick start &amp; agent setup guide</span>
+            <span data-lang="ko">소스 코드, 10초 퀵스타트 및 에이전트 연동 가이드</span>
+          </div>
+        </div>
+        <span class="link-arrow">→</span>
+      </a>
+
+      <a class="link-card" href="https://rakkunn.github.io/vicem/" target="_blank" rel="noopener noreferrer">
+        <div class="link-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+        </div>
+        <div class="link-body">
+          <div class="link-title">
+            <span data-lang="en">Try Zero-Install Browser Sandbox</span>
+            <span data-lang="ko">무설치 웹 브라우저 샌드박스 체험</span>
+          </div>
+          <div class="link-sub">
+            <span data-lang="en">Test AST context diet &amp; baton generation in your browser</span>
+            <span data-lang="ko">설치 없이 브라우저에서 바로 컨텍스트 다이어트 체험</span>
+          </div>
+        </div>
+        <span class="link-arrow">→</span>
+      </a>
+
+      <a class="link-card" href="https://www.npmjs.com/package/vicem-cli" target="_blank" rel="noopener noreferrer">
+        <div class="link-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+        </div>
+        <div class="link-body">
+          <div class="link-title">
+            <span>npm — vicem-cli (v1.1.5)</span>
+          </div>
+          <div class="link-sub">
+            <span data-lang="en">Zero-dependency CLI, local GUI &amp; MCP server package</span>
+            <span data-lang="ko">의존성 0개 CLI, 로컬 가이드 GUI 및 MCP 서버 패키지</span>
+          </div>
+        </div>
+        <span class="link-arrow">→</span>
+      </a>
+
+      <a class="link-card" href="https://glama.ai/mcp/servers/RAKKUNN/vicem" target="_blank" rel="noopener noreferrer">
+        <div class="link-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"></path></svg>
+        </div>
+        <div class="link-body">
+          <div class="link-title">
+            <span>Glama MCP Directory</span>
+            <span class="link-tag">Grade A</span>
+          </div>
+          <div class="link-sub">
+            <span data-lang="en">Verified A-grade security, license &amp; quality score</span>
+            <span data-lang="ko">보안·라이선스·품질 부문 A등급 인증 MCP 서버</span>
+          </div>
+        </div>
+        <span class="link-arrow">→</span>
+      </a>
+
+      <a class="link-card" href="https://github.com/RAKKUNN/vicem/blob/master/SECURITY.md" target="_blank" rel="noopener noreferrer">
+        <div class="link-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+        </div>
+        <div class="link-body">
+          <div class="link-title">
+            <span data-lang="en">Security &amp; Zero-Network Proof</span>
+            <span data-lang="ko">보안 아키텍처 &amp; 제로 네트워크 증명</span>
+          </div>
+          <div class="link-sub">
+            <span data-lang="en">100% local execution + entropy-based secret redaction</span>
+            <span data-lang="ko">100% 로컬 동작 및 API 키/시크릿 자동 마스킹 명세</span>
+          </div>
+        </div>
+        <span class="link-arrow">→</span>
+      </a>
+    </nav>
+
+    <footer>
+      <span data-lang="en">Built for Claude Code · Codex · Cursor · Windsurf · Antigravity</span>
+      <span data-lang="ko">Claude Code · Codex · Cursor · Windsurf · Antigravity 지원</span>
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      const html = document.documentElement;
+      const langBtn = document.getElementById('langBtn');
+      const langLabel = document.getElementById('langLabel');
+      const themeBtn = document.getElementById('themeBtn');
+      const themeLabel = document.getElementById('themeLabel');
+      const cmdText = document.getElementById('cmdText');
+      const copyBtn = document.getElementById('copyBtn');
+      const tabs = document.querySelectorAll('.cmd-tab');
+
+      // Auto-detect Korean browser language on load
+      if ((navigator.language || '').toLowerCase().startsWith('ko')) {
+        html.setAttribute('lang', 'ko');
+        langLabel.textContent = 'English';
+      }
+
+      langBtn.addEventListener('click', function () {
+        const isKo = html.getAttribute('lang') === 'ko';
+        html.setAttribute('lang', isKo ? 'en' : 'ko');
+        langLabel.textContent = isKo ? '한국어' : 'English';
+      });
+
+      themeBtn.addEventListener('click', function () {
+        const isRelay = html.getAttribute('data-theme') === 'relay';
+        html.setAttribute('data-theme', isRelay ? 'dark' : 'relay');
+        themeLabel.textContent = isRelay ? 'Relay Warm' : 'Dark Mode';
+      });
+
+      let currentCmd = 'npx -y vicem-cli gui';
+      tabs.forEach(function (tab) {
+        tab.addEventListener('click', function () {
+          tabs.forEach(function (t) { t.classList.remove('active'); });
+          tab.classList.add('active');
+          currentCmd = tab.getAttribute('data-cmd');
+          cmdText.textContent = '$ ' + currentCmd;
+        });
+      });
+
+      copyBtn.addEventListener('click', function () {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(currentCmd);
+        }
+        const isKo = html.getAttribute('lang') === 'ko';
+        copyBtn.textContent = isKo ? '복사됨 ✓' : 'Copied ✓';
+        setTimeout(function () {
+          copyBtn.innerHTML = '<span data-lang="en">Copy</span><span data-lang="ko">복사</span>';
+        }, 1400);
+      });
+    })();
+  </script>
+</body>
+</html>

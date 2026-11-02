@@ -23,6 +23,14 @@
 >
 > ⭐ **Tip:** Click **Star** (top-right) to bookmark this repo for the next time your coding agent hits a 5-hour quota limit or context rot.
 
+<p align="center">
+  <a href="https://rakkunn.github.io/vicem/promo.mp4">
+    <img src="./promo.gif" width="100%" alt="Vicem 15s Relay Promo — Diet the Context, Pass the Baton (Click for 1080p60 with sound)" />
+  </a>
+  <br />
+  <sub>🎬 <strong>15s Relay Overview</strong> — <a href="https://rakkunn.github.io/vicem/promo.mp4">Watch in 1080p60 with sound (MP4)</a> · <a href="https://rakkunn.github.io/vicem/links.html">All Links &amp; Quick Copy</a></sub>
+</p>
+
 ---
 
 ## ⚡ 10-Second Quick Start (`npx` — Zero Install)
