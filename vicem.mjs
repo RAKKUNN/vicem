@@ -780,11 +780,23 @@ export class DietLedger {
     this.redactedCount = 0;
   }
 
-  addEntry({ filePath, symbolName, startLine, endLine, content }) {
+  addEntry({
+    filePath,
+    symbolName,
+    startLine,
+    endLine,
+    content,
+    calls = [],
+    calledBy = [],
+    salienceScore = 0.5,
+    saliencePercentile = 50,
+  }) {
     // Enforce UC-15 Zero-Leakage & No-Unredaction: never store raw secrets in ledger.json
     const { sanitized, redactedCount } = SecretRedactor.redact(String(content));
     this.redactedCount += redactedCount;
     const rawSha256 = crypto.createHash('sha256').update(sanitized).digest('hex');
+    const normScore = Math.max(0, Math.min(1, Number(Number(salienceScore || 0.5).toFixed(2))));
+    const normPct = Math.max(0, Math.min(100, Math.round(saliencePercentile ?? normScore * 100)));
     const existingIdx = this.entries.findIndex(
       (e) => e.filePath === filePath && e.symbolName === symbolName && e.startLine === startLine
     );
@@ -794,6 +806,10 @@ export class DietLedger {
       startLine,
       endLine,
       rawSha256,
+      salienceScore: normScore,
+      saliencePercentile: normPct,
+      calls: Array.isArray(calls) ? calls : [],
+      calledBy: Array.isArray(calledBy) ? calledBy : [],
       content: sanitized,
     };
     if (existingIdx >= 0) {
@@ -804,22 +820,33 @@ export class DietLedger {
     return entry;
   }
 
-  getEntry(filePath, symbolName = null) {
-    if (!filePath || typeof filePath !== 'string') return null;
+  getEntryMatches(filePath) {
+    if (!filePath || typeof filePath !== 'string') return [];
     const normReq = filePath.replace(/\\/g, '/').trim();
-    if (!normReq) return null;
-    const matches = this.entries.filter((e) => {
+    if (!normReq) return [];
+    return this.entries.filter((e) => {
       const normEntry = String(e.filePath || '').replace(/\\/g, '/');
       return normEntry === normReq || normEntry.endsWith('/' + normReq) || normReq.endsWith('/' + normEntry);
     });
+  }
+
+  getEntryObject(filePath, symbolName = null) {
+    const matches = this.getEntryMatches(filePath);
     if (matches.length === 0) return null;
-    if (!symbolName) {
-      return matches.map((m) => m.content).join('\n\n');
-    }
-    const exact = matches.find((m) => m.symbolName === symbolName);
-    if (exact) return exact.content;
-    const partial = matches.find((m) => m.symbolName.toLowerCase().includes(String(symbolName).toLowerCase()));
-    return partial ? partial.content : null;
+    if (!symbolName) return matches[0];
+    return (
+      matches.find((m) => m.symbolName === symbolName) ||
+      matches.find((m) => m.symbolName.toLowerCase().includes(String(symbolName).toLowerCase())) ||
+      null
+    );
+  }
+
+  getEntry(filePath, symbolName = null) {
+    const matches = this.getEntryMatches(filePath);
+    if (matches.length === 0) return null;
+    if (!symbolName) return matches.map((m) => m.content).join('\n\n');
+    const found = this.getEntryObject(filePath, symbolName);
+    return found ? found.content : null;
   }
 
   save(projectRoot) {
@@ -849,11 +876,14 @@ export class DietLedger {
 }
 
 export class CodeSkeletonizer {
-  /**
-   * Default minimum lines inside a function body before skeletonizing.
-   * Prevents tiny getters/helpers from being stripped while preserving full types/interfaces.
-   */
   static DEFAULT_MIN_LINES = 12;
+
+  static CALL_SKIP_WORDS = new Set([
+    'if', 'for', 'while', 'switch', 'catch', 'return', 'else', 'do', 'try', 'finally',
+    'new', 'delete', 'sizeof', 'typeof', 'function', 'def', 'class', 'super', 'import', 'require',
+    'match', 'replace', 'slice', 'split', 'join', 'map', 'filter', 'reduce', 'find', 'some',
+    'includes', 'push', 'pop', 'shift', 'unshift', 'trim', 'exec', 'test', 'sort', 'resolve',
+  ]);
 
   static skeletonize(filePath, content, options = {}) {
     if (!content || typeof content !== 'string') {
@@ -863,17 +893,69 @@ export class CodeSkeletonizer {
     const minLines = options.minLines ?? CodeSkeletonizer.DEFAULT_MIN_LINES;
     const ext = path.extname(filePath || '').toLowerCase();
 
-    let skeleton;
-    if (ext === '.py') {
-      skeleton = CodeSkeletonizer.parsePython(filePath, content, ledger, minLines);
-    } else {
-      skeleton = CodeSkeletonizer.parseCFamily(filePath, content, ledger, minLines);
-    }
+    const skeleton =
+      ext === '.py'
+        ? CodeSkeletonizer.parsePython(filePath, content, ledger, minLines)
+        : CodeSkeletonizer.parseCFamily(filePath, content, ledger, minLines);
+
+    const ledgerEntries = ledger.entries.filter((e) => e.filePath === filePath);
+    CodeSkeletonizer.annotateSymbolGraphAndSalience(ledgerEntries, options);
+
     return {
       skeleton,
-      ledgerEntries: ledger.entries.filter((e) => e.filePath === filePath),
+      ledgerEntries,
       ledger,
     };
+  }
+
+  static annotateSymbolGraphAndSalience(fileEntries, options = {}) {
+    if (!Array.isArray(fileEntries) || fileEntries.length === 0) return;
+    const symbolMap = new Map(fileEntries.map((e) => [e.symbolName, e]));
+    for (const entry of fileEntries) {
+      entry.calls = [];
+      entry.calledBy = [];
+    }
+    for (const entry of fileEntries) {
+      const seenCalls = new Set();
+      const callRegex = /\b([A-Za-z0-9_$]+)\s*\(/g;
+      let m;
+      while ((m = callRegex.exec(entry.content || '')) !== null) {
+        const callee = m[1];
+        if (
+          callee !== entry.symbolName &&
+          !CodeSkeletonizer.CALL_SKIP_WORDS.has(callee) &&
+          symbolMap.has(callee) &&
+          !seenCalls.has(callee)
+        ) {
+          seenCalls.add(callee);
+          entry.calls.push(callee);
+          const target = symbolMap.get(callee);
+          if (target && !target.calledBy.includes(entry.symbolName)) {
+            target.calledBy.push(entry.symbolName);
+          }
+        }
+      }
+    }
+
+    const baseScore = (typeof options.fileSalienceScore === 'number' ? options.fileSalienceScore : 0.6) * 0.45;
+    const diffText = String(options.diffText || '');
+    const errorLog = String(options.errorLog || '');
+    const promptCorpus = String(options.promptCorpus || '');
+
+    for (const entry of fileEntries) {
+      let raw = baseScore;
+      const sym = entry.symbolName;
+      if (errorLog && errorLog.includes(sym)) raw += 0.25;
+      if (diffText && diffText.includes(sym)) raw += 0.20;
+      if (promptCorpus && promptCorpus.includes(sym)) raw += 0.15;
+      const graphBoost = Math.min(0.15, entry.calls.length * 0.05 + entry.calledBy.length * 0.07);
+      raw += graphBoost;
+      const lineSpan = Math.max(1, (entry.endLine || 12) - (entry.startLine || 1) + 1);
+      const densityPenalty = Math.min(0.08, Math.max(0, Math.log2(lineSpan) - 4) * 0.015);
+      const finalScore = Math.max(0.05, Math.min(1, Number((raw - densityPenalty).toFixed(2))));
+      entry.salienceScore = finalScore;
+      entry.saliencePercentile = Math.max(5, Math.min(100, Math.round(finalScore * 100)));
+    }
   }
 
   /**
@@ -1327,6 +1409,7 @@ export class DietEngine {
       return { omitted: true, skeleton: '', ledgerEntries: [] };
     }
     return CodeSkeletonizer.skeletonize(filePath, content, {
+      ...options,
       ledger: this.ledger,
       minLines: options.minLines ?? CodeSkeletonizer.DEFAULT_MIN_LINES,
     });
@@ -1633,14 +1716,43 @@ export class DeterministicTaskExtractor {
     'y', 'yes', 'ok', 'okay', 'continue', 'go', 'go ahead', 'proceed', 'lgtm', 'sure',
   ]);
 
+  static CONSTRAINT_REGEX =
+    /\b(?:never|do\s+not|don't|must\s+not|avoid|zero[- ]dependenc(?:y|ies)|without\s+modifying)\b|절대|건드리지\s*마|하지\s*마|쓰지\s*마|금지/i;
+  static REJECTION_REGEX =
+    /\b(?:revert|rollback|rolled\s+back|didn't\s+work|did\s+not\s+work|still\s+failing|broke|broken)\b|안\s*돼|안돼|돌려놔|원복|실패했/i;
+
   static extract(rawEvents = [], gitContext = null) {
     const userPrompts = [];
     const assistantMessages = [];
     const editedFiles = new Set();
     const todoCompleted = [];
     const todoPending = [];
+    const constraints = [];
+    const failedAttemptsRaw = [];
     let lastFailedCommand = null;
+    let lastEditedFile = null;
+    let editsSinceLastFailure = 0;
     let lastEventWasUnansweredUser = false;
+
+    const recordFailure = (cmd, exitCode, errorText) => {
+      const cleanErr = String(errorText || '')
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .find((l) => l.length > 3) || '';
+      const entry = {
+        command: String(cmd || 'shell command').trim().slice(0, 120),
+        exitCode: exitCode || 1,
+        error: cleanErr.slice(0, 140),
+        file: lastEditedFile,
+        revertedOrEditedAfter: false,
+        resolved: false,
+      };
+      lastFailedCommand = entry;
+      editsSinceLastFailure = 0;
+      if (!failedAttemptsRaw.some((f) => f.command === entry.command && f.file === entry.file)) {
+        failedAttemptsRaw.push(entry);
+      }
+    };
 
     for (const ev of rawEvents) {
       if (!ev || typeof ev !== 'object') continue;
@@ -1651,8 +1763,30 @@ export class DeterministicTaskExtractor {
 
       if (role === 'user' || role === 'human' || ev.type === 'user_message' || ev.payload?.type === 'user_message') {
         if (textContent && !/^(?:현재\s*세션.*handoff|.*(?:로|에게)\s*(?:handoff|인계)(?:해|해줘|해주세요)?[.! ]*|handoff (?:this|the current) session.*)$/i.test(textContent.trim())) {
-          userPrompts.push(textContent.trim());
+          const trimmed = textContent.trim();
+          userPrompts.push(trimmed);
           lastEventWasUnansweredUser = true;
+          const cleanLine = trimmed.replace(/\s+/g, ' ');
+          const isSystemInjection =
+            trimmed.length > 600 ||
+            trimmed.startsWith('Base directory for this skill:') ||
+            trimmed.includes('VICEM-BATON');
+          if (!isSystemInjection && DeterministicTaskExtractor.CONSTRAINT_REGEX.test(cleanLine) && constraints.length < 5) {
+            const snippet = cleanLine.slice(0, 180);
+            if (!constraints.some((c) => c.text === snippet)) {
+              constraints.push({ text: snippet, score: 1.0, percentile: 100 });
+            }
+          }
+          if (!isSystemInjection && DeterministicTaskExtractor.REJECTION_REGEX.test(cleanLine) && failedAttemptsRaw.length < 6) {
+            failedAttemptsRaw.push({
+              command: `User rejection${lastEditedFile ? ` on ${lastEditedFile}` : ''}`,
+              exitCode: 1,
+              error: cleanLine.slice(0, 140),
+              file: lastEditedFile,
+              revertedOrEditedAfter: true,
+              resolved: false,
+            });
+          }
         }
       } else if (role === 'assistant' || role === 'model' || ev.type === 'agent_message' || ev.payload?.type === 'agent_message') {
         if (textContent) {
@@ -1702,15 +1836,29 @@ export class DeterministicTaskExtractor {
           const targetFile = input.file_path || input.filePath || input.path || input.TargetFile;
           if (targetFile && typeof targetFile === 'string') {
             editedFiles.add(targetFile);
+            lastEditedFile = targetFile;
+            if (lastFailedCommand) {
+              lastFailedCommand.revertedOrEditedAfter = true;
+              editsSinceLastFailure++;
+            }
           }
         }
 
         // Source 3b: Bash / Command execution status
         if (name === 'bash' || name === 'run_command' || name === 'shell' || name === 'exec_command') {
-          const cmd = input.command || input.CommandLine || input.cmd;
+          const cmd = input.command || input.CommandLine || input.cmd || '';
+          if (/\bgit\s+(?:checkout|restore|reset|revert)\b/.test(cmd) && lastFailedCommand) {
+            lastFailedCommand.revertedOrEditedAfter = true;
+          }
           if (tc.exitCode && tc.exitCode !== 0) {
-            lastFailedCommand = { command: cmd || 'shell command', exitCode: tc.exitCode, error: tc.output || '' };
+            recordFailure(cmd || 'shell command', tc.exitCode, tc.output || '');
           } else if (tc.exitCode === 0) {
+            if (lastFailedCommand) {
+              lastFailedCommand.resolved = true;
+              if (editsSinceLastFailure > 0) {
+                lastFailedCommand.revertedOrEditedAfter = true;
+              }
+            }
             lastFailedCommand = null;
           }
         }
@@ -1719,13 +1867,34 @@ export class DeterministicTaskExtractor {
       // Check tool_result error events
       if (ev.type === 'tool_result' || ev.role === 'tool') {
         if (ev.is_error || (typeof ev.exit_code === 'number' && ev.exit_code !== 0)) {
-          lastFailedCommand = {
-            command: ev.command || ev.tool_name || 'last command',
-            exitCode: ev.exit_code || 1,
-            error: typeof ev.content === 'string' ? ev.content.slice(0, 300) : '',
-          };
+          recordFailure(
+            ev.command || ev.tool_name || 'last command',
+            ev.exit_code || 1,
+            typeof ev.content === 'string' ? ev.content.slice(0, 300) : ''
+          );
         }
       }
+    }
+
+    // Build salience-scored Failed Attempts (Dead Ends & Unresolved Blockers)
+    // Keep unresolved failures (95%) and failures that required subsequent code edits/reverts (88%), drop transient 0-edit retries
+    const failedAttempts = [];
+    for (const f of failedAttemptsRaw) {
+      const isUnresolved = lastFailedCommand && lastFailedCommand.command === f.command;
+      if (!isUnresolved && f.resolved && !f.revertedOrEditedAfter) continue;
+      const score = isUnresolved ? 0.95 : 0.88;
+      const percentile = Math.round(score * 100);
+      const filePart = f.file ? ` on ${f.file}` : '';
+      const errPart = f.error ? ` — ${f.error}` : '';
+      const statusTag = isUnresolved ? 'UNRESOLVED' : 'REVERTED/AVOIDED';
+      failedAttempts.push({
+        text: `[${percentile}% | ${statusTag}] '${f.command}' (exit ${f.exitCode})${filePart}${errPart}`,
+        command: f.command,
+        file: f.file,
+        score,
+        percentile,
+        unresolved: Boolean(isUnresolved),
+      });
     }
 
     // Source 2: Prompt Boundary Heuristics for Goal
@@ -1796,6 +1965,8 @@ export class DeterministicTaskExtractor {
       goal,
       done: doneItems,
       immediateNext,
+      failedAttempts,
+      constraints,
       userPrompts,
       assistantMessages,
     };
@@ -2955,13 +3126,32 @@ export class PreHandoffSnapshotStore {
   }
 }
 
+export class ContextSalienceEngine {
+  static clamp01(val) {
+    return Number.isFinite(val) ? Math.max(0, Math.min(1, Number(val.toFixed(2)))) : 0;
+  }
+  static toPercentile(score01) {
+    return Math.max(0, Math.min(100, Math.round(ContextSalienceEngine.clamp01(score01) * 100)));
+  }
+  static formatPercentile(scoreOrPct) {
+    const n = Number(scoreOrPct) || 0;
+    const p = n > 0 && n <= 1 ? Math.round(n * 100) : Math.round(n);
+    return `${Math.max(0, Math.min(100, p))}%`;
+  }
+  static evaluate({ signalWeight = 50, validity = 1.0, recency = 1.0, tokens = 16, maxDensity = 25 } = {}) {
+    if (validity <= 0 || signalWeight <= 0) return { score: 0, percentile: 0, density: 0 };
+    const density = (signalWeight * validity * recency) / Math.log2(Math.max(2, tokens) + 2);
+    const score = ContextSalienceEngine.clamp01(density / maxDensity);
+    return { score, percentile: ContextSalienceEngine.toPercentile(score), density: Number(density.toFixed(2)) };
+  }
+  static normalizePoints(rawPoints, maxPoints = 200) {
+    const score = ContextSalienceEngine.clamp01(Math.max(0.05, rawPoints / Math.max(1, maxPoints)));
+    return { score, percentile: ContextSalienceEngine.toPercentile(score) };
+  }
+}
+
 /**
  * Task 9.2 (Fix 9-B): ContextFileRanker — Locality-Aware Smart File Ranking & 1-Hop Local Import Resolver
- * Prioritizes:
- *   1. Files mentioned in error logs / failing stacktraces (+100)
- *   2. Files mentioned in user prompts / Immediate NEXT (+80)
- *   3. Git modified files (+50)
- *   4. 1-Hop local imported type/contract files (+30, supports TS .js->.ts mapping, @/* alias, and Python relative imports)
  */
 export class ContextFileRanker {
   static CANDIDATE_EXTS = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.py', '.go', '.rs'];
@@ -3041,7 +3231,7 @@ export class ContextFileRanker {
     return [...imports];
   }
 
-  static rankFiles({
+  static rankFilesWithSalience({
     projectRoot,
     modifiedFiles = [],
     errorLog = '',
@@ -3051,8 +3241,9 @@ export class ContextFileRanker {
     const resolvedRoot = path.resolve(projectRoot);
     const noiseGate = new NoiseGate(resolvedRoot);
     const scores = new Map();
+    const reasonsMap = new Map();
 
-    const addScore = (relFile, pts) => {
+    const addScore = (relFile, pts, reasonLabel = null) => {
       if (!relFile) return;
       const norm = relFile.replace(/\\/g, '/').replace(/^\.\//, '');
       if (!AtomicFs.isSafeRepoFilePath(resolvedRoot, norm)) return;
@@ -3065,6 +3256,11 @@ export class ContextFileRanker {
         return;
       }
       scores.set(norm, (scores.get(norm) || 0) + pts);
+      if (reasonLabel) {
+        const list = reasonsMap.get(norm) || [];
+        if (!list.includes(reasonLabel)) list.push(reasonLabel);
+        reasonsMap.set(norm, list);
+      }
     };
 
     const promptCorpus = [
@@ -3082,7 +3278,7 @@ export class ContextFileRanker {
         const cand = m[1].replace(/^\.\//, '');
         if (!scoredFromError.has(cand)) {
           scoredFromError.add(cand);
-          addScore(cand, 100);
+          addScore(cand, 100, 'error_log');
         }
       }
     }
@@ -3092,7 +3288,7 @@ export class ContextFileRanker {
         const cand = m[1].replace(/^\.\//, '');
         if (!scoredFromPrompt.has(cand)) {
           scoredFromPrompt.add(cand);
-          addScore(cand, 80);
+          addScore(cand, 80, 'prompt_mention');
         }
       }
     }
@@ -3102,20 +3298,20 @@ export class ContextFileRanker {
       const norm = String(rel || '').replace(/\\/g, '/').replace(/^\.\//, '');
       if (!norm) continue;
       const baseName = path.basename(norm);
-      addScore(norm, 50);
+      addScore(norm, 50, 'git_modified');
       if (
         errorLog &&
         !scoredFromError.has(norm) &&
         (errorLog.includes(norm) || errorLog.includes(baseName))
       ) {
-        addScore(norm, 100);
+        addScore(norm, 100, 'error_log');
       }
       if (
         promptCorpus &&
         !scoredFromPrompt.has(norm) &&
         (promptCorpus.includes(norm) || promptCorpus.includes(baseName))
       ) {
-        addScore(norm, 80);
+        addScore(norm, 80, 'prompt_mention');
       }
     }
 
@@ -3132,7 +3328,7 @@ export class ContextFileRanker {
           const hopImports = ContextFileRanker.extractLocalImports(resolvedRoot, modFile, text);
           const importWeight = modScore >= 100 ? 65 : 30;
           for (const imp of hopImports) {
-            addScore(imp, importWeight);
+            addScore(imp, importWeight, '1hop_import');
           }
         }
       } catch {
@@ -3143,7 +3339,20 @@ export class ContextFileRanker {
     return [...scores.entries()]
       .sort((a, b) => b[1] - a[1])
       .slice(0, maxFiles)
-      .map(([file]) => file);
+      .map(([file, rawPoints]) => {
+        const { score, percentile } = ContextSalienceEngine.normalizePoints(rawPoints, 180);
+        return {
+          file,
+          rawPoints,
+          score,
+          percentile,
+          reasons: reasonsMap.get(file) || [],
+        };
+      });
+  }
+
+  static rankFiles(opts) {
+    return ContextFileRanker.rankFilesWithSalience(opts).map((item) => item.file);
   }
 }
 
@@ -3189,14 +3398,17 @@ export class BatonIaBuilder {
       errorLog || '',
     ].join('\n');
 
-    // Read and skeletonize ranked files (error-log files + prompt files + modified files + 1-hop local imports — Fix 9-B)
-    const rankedFiles = ContextFileRanker.rankFiles({
+    // Read and skeletonize ranked files with 0..100% salience percentile scoring (v1.2.0)
+    const rankedWithSalience = ContextFileRanker.rankFilesWithSalience({
       projectRoot: resolvedRoot,
       modifiedFiles: git.modifiedFiles || [],
       errorLog,
       taskContext: task,
       maxFiles: 12,
     });
+    const fileSalienceMap = new Map(rankedWithSalience.map((r) => [r.file, r]));
+    const rankedFiles = rankedWithSalience.map((r) => r.file);
+    const promptCorpus = [task.goal || '', ...(task.immediateNext || []), ...(task.userPrompts || [])].join('\n');
 
     for (const relFile of rankedFiles) {
       const fullPath = path.join(resolvedRoot, relFile);
@@ -3206,7 +3418,13 @@ export class BatonIaBuilder {
         if (!stat.isFile() || stat.size > 256 * 1024) continue;
         const rawCode = fs.readFileSync(fullPath, 'utf8');
         rawContentBuffer += '\n' + rawCode;
-        const { omitted, skeleton } = dietEngine.dietCode(relFile, rawCode);
+        const fileSal = fileSalienceMap.get(relFile);
+        const { omitted, skeleton } = dietEngine.dietCode(relFile, rawCode, {
+          fileSalienceScore: fileSal ? fileSal.score : 0.5,
+          diffText: git.diffPatch || '',
+          errorLog,
+          promptCorpus,
+        });
         if (!omitted && skeleton) {
           codeSkeletons.set(relFile, skeleton);
         }
@@ -3226,6 +3444,15 @@ export class BatonIaBuilder {
         ? task.done.map((d) => /unverified|Session file reference|Modified file:|Working tree modified:/.test(d) ? `- Evidence (not verified complete): ${d}` : `- [x] ${d}`).join('\n')
         : '- No completed tasks verified';
 
+    const guardrailLines = [
+      ...(task.constraints || []).map((c) => `- 🛡️ **[${c.percentile ?? 100}% | CONSTRAINT]** ${c.text || c}`),
+      ...(task.failedAttempts || []).map((f) => `- ⛔ **${f.text || f}**`),
+    ];
+    const failedAttemptsBlock =
+      guardrailLines.length > 0
+        ? `\n### Failed Attempts & Guardrails (Do Not Retry)\n${guardrailLines.join('\n')}`
+        : '';
+
     const nextSection = (task.immediateNext || [])
       .map((item, idx) => `${idx + 1}. **${item}**`)
       .join('\n');
@@ -3237,12 +3464,14 @@ export class BatonIaBuilder {
     }
 
     const skeletonBlocks = [];
-    let currentEstTokens = TokenEstimator.estimate(task.goal + nextSection + doneSection + diffBlock + slimmedLog);
+    let currentEstTokens = TokenEstimator.estimate(task.goal + nextSection + doneSection + failedAttemptsBlock + diffBlock + slimmedLog);
 
     for (const [relFile, skel] of codeSkeletons.entries()) {
       const skelTokens = TokenEstimator.estimate(skel);
       if (currentEstTokens + skelTokens <= budgetTokens * 0.9) {
-        skeletonBlocks.push(`### \`${relFile}\`\n\`\`\`\n${skel.trim()}\n\`\`\``);
+        const fileSal = fileSalienceMap.get(relFile);
+        const salBadge = fileSal ? ` (Salience: ${fileSal.percentile}%)` : '';
+        skeletonBlocks.push(`### \`${relFile}\`${salBadge}\n\`\`\`\n${skel.trim()}\n\`\`\``);
         currentEstTokens += skelTokens;
       }
     }
@@ -3251,7 +3480,13 @@ export class BatonIaBuilder {
     const ledgerGuide =
       ledgerEntries.length > 0
         ? ledgerEntries
-            .map((e) => `- \`${e.filePath}\` :: \`${e.symbolName}\` (lines ${e.startLine}-${e.endLine})`)
+            .map((e) => {
+              const graphHint =
+                e.calls?.length || e.calledBy?.length
+                  ? ` [${e.saliencePercentile ?? 50}%${e.calls?.length ? ` | calls: ${e.calls.slice(0, 3).join(', ')}` : ''}${e.calledBy?.length ? ` | called-by: ${e.calledBy.slice(0, 2).join(', ')}` : ''}]`
+                  : '';
+              return `- \`${e.filePath}\` :: \`${e.symbolName}\` (lines ${e.startLine}-${e.endLine})${graphHint}`;
+            })
             .join('\n')
         : '- All relevant code blocks included inline (0 symbols omitted).';
 
@@ -3264,7 +3499,7 @@ export class BatonIaBuilder {
       return [
         // ================= TOP PRIMACY ZONE (First 15%: Human 3s Scan & LLM Primacy Bias) =================
         `# BATON: ${titleGoal}`,
-        `> Generated by Vicem v1.1.6 | Source: ${sourceAgent} → Target: ${targetAgent}${roleTag} | Diet: ${rawTok} → ${dietTok} tokens (-${ratio}%) | Commit: ${git.headCommit}`,
+        `> Generated by Vicem v1.2.0 | Source: ${sourceAgent} → Target: ${targetAgent}${roleTag} | Diet: ${rawTok} → ${dietTok} tokens (-${ratio}%) | Commit: ${git.headCommit}`,
         ``,
         `## 1. Goal`,
         `${task.goal}`,
@@ -3274,12 +3509,17 @@ export class BatonIaBuilder {
         ``,
         // ================= MIDDLE EVIDENCE ZONE (Middle 75%: Structured Compressed Evidence) =================
         `## 3. Done`,
-        `${doneSection}`,
+        `${doneSection}${failedAttemptsBlock}`,
         ``,
         `## 4. Work Evidence (Branch: \`${git.branch}\` @ \`${git.headCommit}\`)`,
         `### Modified Files (${(git.modifiedFiles || []).length})`,
         (git.modifiedFiles || []).length > 0
-          ? git.modifiedFiles.map((f) => `- \`${f}\``).join('\n')
+          ? git.modifiedFiles
+              .map((f) => {
+                const sal = fileSalienceMap.get(String(f).replace(/\\/g, '/').replace(/^\.\//, ''));
+                return sal ? `- \`${f}\` (${sal.percentile}%)` : `- \`${f}\``;
+              })
+              .join('\n')
           : '- Clean working tree',
         ``,
         `### Git Diff`,
@@ -3341,6 +3581,31 @@ export class BatonIaBuilder {
         goal: SecretRedactor.redact(task.goal).sanitized,
         immediateNext: (task.immediateNext || []).map((i) => SecretRedactor.redact(i).sanitized),
         done: (task.done || []).map((d) => SecretRedactor.redact(d).sanitized),
+        failedAttempts: (task.failedAttempts || []).map((f) => ({
+          ...f,
+          text: SecretRedactor.redact(String(f.text || f)).sanitized,
+        })),
+        constraints: (task.constraints || []).map((c) => ({
+          ...c,
+          text: SecretRedactor.redact(String(c.text || c)).sanitized,
+        })),
+      },
+      salience: {
+        scale: 'percentile_0_100',
+        files: rankedWithSalience.map((r) => ({
+          file: r.file,
+          score: r.score,
+          percentile: r.percentile,
+          reasons: r.reasons,
+        })),
+        symbols: ledgerEntries.map((e) => ({
+          filePath: e.filePath,
+          symbolName: e.symbolName,
+          score: e.salienceScore ?? 0.5,
+          percentile: e.saliencePercentile ?? 50,
+          calls: e.calls || [],
+          calledBy: e.calledBy || [],
+        })),
       },
       diet: {
         rawTokens: effectiveRawTokens,
@@ -4773,7 +5038,13 @@ export class McpServerAdapter {
             symbol_name: {
               type: 'string',
               description:
-                'Exact function, method, or class name to restore from .vicem/ledger.json (e.g., "verifyJwt" or "parseCFamily").',
+                'Exact function, method, or class name to restore from .vicem/ledger.json (or comma-separated names like "parseCFamily,classifyCBlockHeader" for batch rehydration).',
+            },
+            include_callees: {
+              type: 'boolean',
+              default: false,
+              description:
+                'When true, also restores 1-hop same-file functions called by symbol_name in a single round-trip.',
             },
           },
           required: ['file_path', 'symbol_name'],
@@ -4806,6 +5077,29 @@ export class McpServerAdapter {
     ];
   }
 
+  static getResourcesList() {
+    return [
+      {
+        uri: 'vicem://baton/current',
+        name: 'Current Context Baton (.vicem/BATON.md)',
+        description: 'U-Shaped Context Baton with 0-100% salience percentiles, failed attempts, and symbol index.',
+        mimeType: 'text/markdown',
+      },
+      {
+        uri: 'vicem://ledger/index',
+        name: 'Diet Ledger & Call-Graph Index (.vicem/ledger.json)',
+        description: 'Symbol metadata index including 0-100% salience percentiles and 1-hop calls/calledBy edges.',
+        mimeType: 'application/json',
+      },
+      {
+        uri: 'vicem://salience/report',
+        name: 'Context Salience Percentile Report (0-100%)',
+        description: 'Ranked file, symbol, constraint, and failed-attempt salience scores from .vicem/baton.json.',
+        mimeType: 'application/json',
+      },
+    ];
+  }
+
   async handleRequest(req) {
     if (!req || typeof req !== 'object') return null;
     const { id, method, params } = req;
@@ -4827,10 +5121,11 @@ export class McpServerAdapter {
             protocolVersion: supportedVersion,
             capabilities: {
               tools: { listChanged: false },
+              resources: { subscribe: false, listChanged: false },
             },
             serverInfo: {
               name: 'vicem-mcp',
-              version: '1.1.6',
+              version: '1.2.0',
             },
           },
         };
@@ -4838,6 +5133,36 @@ export class McpServerAdapter {
 
       if (method === 'ping') {
         return { jsonrpc: '2.0', id, result: {} };
+      }
+
+      if (method === 'resources/list') {
+        return { jsonrpc: '2.0', id, result: { resources: McpServerAdapter.getResourcesList() } };
+      }
+
+      if (method === 'resources/read') {
+        const uri = params?.uri;
+        if (uri === 'vicem://baton/current') {
+          const p = path.join(this.projectRoot, '.vicem', 'BATON.md');
+          const text = fs.existsSync(p) ? SecretRedactor.redact(fs.readFileSync(p, 'utf8')).sanitized : 'No .vicem/BATON.md found.';
+          return { jsonrpc: '2.0', id, result: { contents: [{ uri, mimeType: 'text/markdown', text }] } };
+        }
+        if (uri === 'vicem://ledger/index') {
+          const ledger = DietLedger.load(this.projectRoot);
+          const text = JSON.stringify({ batonId: ledger.batonId, symbols: ledger.entries.map(({ content, ...m }) => m) }, null, 2);
+          return { jsonrpc: '2.0', id, result: { contents: [{ uri, mimeType: 'application/json', text }] } };
+        }
+        if (uri === 'vicem://salience/report') {
+          const p = path.join(this.projectRoot, '.vicem', 'baton.json');
+          const raw = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : {};
+          const text = JSON.stringify({
+            id: raw.id || null,
+            salience: raw.salience || { scale: 'percentile_0_100', files: [], symbols: [] },
+            failedAttempts: raw.task?.failedAttempts || [],
+            constraints: raw.task?.constraints || [],
+          }, null, 2);
+          return { jsonrpc: '2.0', id, result: { contents: [{ uri, mimeType: 'application/json', text }] } };
+        }
+        return { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown resource URI: ${uri}` } };
       }
 
       if (method === 'tools/list') {
@@ -4894,23 +5219,64 @@ export class McpServerAdapter {
 
         if (toolName === 'vicem_rehydrate') {
           const filePath = args.file_path || args.filePath;
-          const symbolName = args.symbol_name || args.symbolName;
+          const rawSymArg = String(args.symbol_name || args.symbolName || '');
+          const requestedSymbols = rawSymArg
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const includeCallees = Boolean(args.include_callees || args.includeCallees);
           const ledger = DietLedger.load(this.projectRoot);
-          const rawCode = ledger.getEntry(filePath, symbolName);
-          if (!rawCode) {
-            return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Symbol '${symbolName}' in '${filePath}' not found in .vicem/ledger.json.` }], isError: true } };
-          }
-          // Enforce SecretRedactor on rehydrated output as defense-in-depth (SRS C-06 / UC-15)
-          const { sanitized } = SecretRedactor.redact(rawCode);
-          const drift = StalenessDriftGuard.check(this.projectRoot);
-          let warn = drift.drifted ? `// ⚠️ [STALENESS DRIFT WARNING]: Baton commit ${drift.batonHead} != HEAD ${drift.currentHead}.\n` : '';
-          if (!warn && filePath && AtomicFs.isSafeRepoFilePath(this.projectRoot, filePath)) {
-            const abs = path.resolve(this.projectRoot, filePath);
-            if (fs.existsSync(abs) && !SecretRedactor.redact(fs.readFileSync(abs, 'utf8')).sanitized.includes(sanitized.trim())) {
-              warn = `// ⚠️ [STALENESS DRIFT WARNING]: '${filePath}' modified on disk since ledger snapshot.\n`;
+
+          const targetEntries = [];
+          const seenSyms = new Set();
+          for (const sym of requestedSymbols) {
+            const obj = ledger.getEntryObject(filePath, sym);
+            if (obj && !seenSyms.has(obj.symbolName)) {
+              seenSyms.add(obj.symbolName);
+              targetEntries.push(obj);
+              if (includeCallees && Array.isArray(obj.calls)) {
+                for (const callee of obj.calls) {
+                  const calleeObj = ledger.getEntryObject(filePath, callee);
+                  if (calleeObj && !seenSyms.has(calleeObj.symbolName)) {
+                    seenSyms.add(calleeObj.symbolName);
+                    targetEntries.push(calleeObj);
+                  }
+                }
+              }
             }
           }
-          return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: warn + sanitized }], isError: false } };
+
+          if (targetEntries.length === 0) {
+            return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Symbol '${rawSymArg}' in '${filePath}' not found in .vicem/ledger.json.` }], isError: true } };
+          }
+
+          const combinedRaw = targetEntries.map((e) => e.content).join('\n\n');
+          const { sanitized } = SecretRedactor.redact(combinedRaw);
+          const drift = StalenessDriftGuard.check(this.projectRoot);
+          let warn = drift.drifted ? `// ⚠️ [STALENESS DRIFT WARNING]: Baton commit ${drift.batonHead} != HEAD ${drift.currentHead}.\n` : '';
+          let liveDiskAppendix = '';
+          if (filePath && AtomicFs.isSafeRepoFilePath(this.projectRoot, filePath)) {
+            const abs = path.resolve(this.projectRoot, filePath);
+            if (fs.existsSync(abs)) {
+              const diskSanitized = SecretRedactor.redact(fs.readFileSync(abs, 'utf8')).sanitized;
+              if (!diskSanitized.includes(sanitized.trim())) {
+                if (!warn) {
+                  warn = `// ⚠️ [STALENESS DRIFT WARNING]: '${filePath}' modified on disk since ledger snapshot.\n`;
+                }
+                const liveSnippets = [];
+                for (const entry of targetEntries) {
+                  const span = SmartPatchApplier.findUniqueSymbolSpanInFile(diskSanitized, entry.symbolName);
+                  if (span) {
+                    liveSnippets.push(diskSanitized.slice(span.startIdx, span.endIdx).trim());
+                  }
+                }
+                if (liveSnippets.length > 0) {
+                  liveDiskAppendix = `\n\n// --- [LIVE DISK IMPLEMENTATION (Updated Since Baton Snapshot)] ---\n${liveSnippets.join('\n\n')}`;
+                }
+              }
+            }
+          }
+          return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: warn + sanitized + liveDiskAppendix }], isError: false } };
         }
 
         if (toolName === 'vicem_check_guard') {
@@ -5217,16 +5583,6 @@ export class PtyWrapController {
   }
 }
 
-/**
- * Full 3-Tier CLI Router (`VicemApp`) supporting:
- * - Tier 1 Daily Zero-Flag: `vicem`, `vicem <target>`, `vicem back`, `vicem rollback`
- * - Tier 2 Explicit Workflow: `vicem self`, `vicem build`, `vicem review`, `vicem studio`, `vicem land`
- * - Tier 3 Plumbing & Automation: `vicem diet`, `vicem harvest`, `vicem mount`, `vicem unmount`, `vicem clip`, `vicem wrap`, `vicem guard`, `vicem mcp`, `vicem export-team`, `vicem fan-out`, `vicem fan-in`
- */
-/**
- * Task 11.1 (Fix 11-A): HTML-Safe JSON Serialization for `<script type="application/json">` Hydration
- * Escapes `<`, `>`, `&`, `\u2028`, `\u2029` so source code containing `</script>` never causes Local XSS or parser breakage.
- */
 export function safeJsonForHtmlScript(data) {
   return JSON.stringify(data)
     .replace(/</g, '\\u003c')
@@ -5243,20 +5599,13 @@ export class StudioHydrationAdapter {
     const walk = (dir, relBase = '') => {
       if (found.length >= maxFiles) return;
       let entries;
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
       for (const entry of entries) {
         if (found.length >= maxFiles) return;
         const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
         if (noiseGate.isIgnored(rel)) continue;
-        if (entry.isDirectory()) {
-          walk(path.join(dir, entry.name), rel);
-        } else if (/\.(?:ts|tsx|js|jsx|mjs|py|go|rs)$/.test(entry.name)) {
-          found.push(rel);
-        }
+        if (entry.isDirectory()) walk(path.join(dir, entry.name), rel);
+        else if (/\.(?:ts|tsx|js|jsx|mjs|py|go|rs)$/.test(entry.name)) found.push(rel);
       }
     };
     walk(root);
@@ -5274,27 +5623,21 @@ export class StudioHydrationAdapter {
       taskContext: task,
       maxFiles: 8,
     });
-    const rankedFiles =
-      ranked.length > 0 ? ranked : StudioHydrationAdapter.discoverSourceFilesFallback(root, 8);
-
+    const rankedFiles = ranked.length > 0 ? ranked : StudioHydrationAdapter.discoverSourceFilesFallback(root, 8);
     const sourceChunks = [];
     for (const rel of rankedFiles) {
       const abs = path.join(root, rel);
       try {
         if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
-        const raw = fs.readFileSync(abs, 'utf8');
-        const { sanitized } = SecretRedactor.redact(raw);
+        const { sanitized } = SecretRedactor.redact(fs.readFileSync(abs, 'utf8'));
         sourceChunks.push(`// File: ${rel}\n${sanitized.slice(0, 6000)}`);
       } catch {}
     }
-
     return {
       projectName: path.basename(root),
       goal: SecretRedactor.redact(task.goal || 'Active Project Handoff').sanitized,
       nextSteps: (task.immediateNext || []).map((s) => SecretRedactor.redact(s).sanitized),
-      rawSource:
-        sourceChunks.join('\n\n') ||
-        SecretRedactor.redact(git.diffStat || '// No modified files detected').sanitized,
+      rawSource: sourceChunks.join('\n\n') || SecretRedactor.redact(git.diffStat || '// No modified files detected').sanitized,
       targetAgent: options.targetAgent || 'codex',
       fileCount: Math.max(1, sourceChunks.length),
       generatedAt: new Date().toISOString(),
@@ -5307,23 +5650,17 @@ export class StudioHydrationAdapter {
     const payload = options.payload || StudioHydrationAdapter.buildHydrationPayload(root, options);
     const escapedJson = safeJsonForHtmlScript(payload);
     const scriptTag = `  <script id="vicem-hydration-data" type="application/json">${escapedJson}</script>\n`;
-
     const templateHtml = fs.readFileSync(studioTemplatePath, 'utf8');
     const targetIdx = templateHtml.indexOf('<script>');
-    const liveHtml =
-      targetIdx !== -1
-        ? templateHtml.slice(0, targetIdx) + scriptTag + templateHtml.slice(targetIdx)
-        : templateHtml.replace('</body>', `${scriptTag}</body>`);
-
+    const liveHtml = targetIdx !== -1
+      ? templateHtml.slice(0, targetIdx) + scriptTag + templateHtml.slice(targetIdx)
+      : templateHtml.replace('</body>', `${scriptTag}</body>`);
     const liveHtmlPath = path.join(vicemDir, 'studio.live.html');
     AtomicFs.writeFileAtomic(liveHtmlPath, liveHtml);
     return { liveHtmlPath, payload, escapedJson };
   }
 }
 
-/**
- * Task 12.1 (Fix 12-A): Worktree-Safe Idempotent Git Pre-Commit Hook Installer (`vicem init`)
- */
 export class GitHookInstaller {
   static HOOK_START = '# --- VICEM-GUARD-HOOK-START ---';
   static HOOK_END = '# --- VICEM-GUARD-HOOK-END ---';
@@ -5344,15 +5681,11 @@ export class GitHookInstaller {
   static resolveHooksDir(projectRoot) {
     const gitDir = AtomicFs.resolveGitDir(projectRoot);
     if (!gitDir) return null;
-    // In a git worktree (`.../.git/worktrees/<name>`), check if `commondir` exists
     const commonDirFile = path.join(gitDir, 'commondir');
     if (fs.existsSync(commonDirFile)) {
       try {
-        const relCommon = fs.readFileSync(commonDirFile, 'utf8').trim();
-        const resolvedCommon = path.resolve(gitDir, relCommon);
-        if (fs.existsSync(resolvedCommon)) {
-          return path.join(resolvedCommon, 'hooks');
-        }
+        const resolvedCommon = path.resolve(gitDir, fs.readFileSync(commonDirFile, 'utf8').trim());
+        if (fs.existsSync(resolvedCommon)) return path.join(resolvedCommon, 'hooks');
       } catch {}
     }
     return path.join(gitDir, 'hooks');
@@ -5360,79 +5693,46 @@ export class GitHookInstaller {
 
   static install(projectRoot) {
     const hooksDir = GitHookInstaller.resolveHooksDir(projectRoot);
-    if (!hooksDir) {
-      return { installed: false, reason: 'not_a_git_repo', hookPath: null };
-    }
+    if (!hooksDir) return { installed: false, reason: 'not_a_git_repo', hookPath: null };
     fs.mkdirSync(hooksDir, { recursive: true });
     const hookPath = path.join(hooksDir, 'pre-commit');
     const block = GitHookInstaller.buildHookBlock();
-
-    let existing = '';
-    if (fs.existsSync(hookPath)) {
-      existing = fs.readFileSync(hookPath, 'utf8');
-    }
-
-    let updated;
+    const existing = fs.existsSync(hookPath) ? fs.readFileSync(hookPath, 'utf8') : '';
     const startIdx = existing.indexOf(GitHookInstaller.HOOK_START);
     const endIdx = existing.indexOf(GitHookInstaller.HOOK_END);
-
+    let updated;
     if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-      // Idempotent replace in-place
-      updated =
-        existing.slice(0, startIdx) +
-        block +
-        existing.slice(endIdx + GitHookInstaller.HOOK_END.length);
+      updated = existing.slice(0, startIdx) + block + existing.slice(endIdx + GitHookInstaller.HOOK_END.length);
     } else if (!existing.trim()) {
       updated = `#!/bin/sh\n${block}\n`;
     } else {
-      const sep = existing.endsWith('\n') ? '\n' : '\n\n';
-      updated = `${existing}${sep}${block}\n`;
+      updated = `${existing}${existing.endsWith('\n') ? '\n' : '\n\n'}${block}\n`;
     }
-
     AtomicFs.writeFileAtomic(hookPath, updated);
-    try {
-      fs.chmodSync(hookPath, 0o755);
-    } catch {}
+    try { fs.chmodSync(hookPath, 0o755); } catch {}
     return { installed: true, hookPath, hooksDir };
   }
 
   static uninstall(projectRoot) {
     const hooksDir = GitHookInstaller.resolveHooksDir(projectRoot);
-    if (!hooksDir) {
-      return { uninstalled: false, reason: 'not_a_git_repo', hookPath: null };
-    }
+    if (!hooksDir) return { uninstalled: false, reason: 'not_a_git_repo', hookPath: null };
     const hookPath = path.join(hooksDir, 'pre-commit');
-    if (!fs.existsSync(hookPath)) {
-      return { uninstalled: false, reason: 'no_hook_file', hookPath };
-    }
-
+    if (!fs.existsSync(hookPath)) return { uninstalled: false, reason: 'no_hook_file', hookPath };
     const existing = fs.readFileSync(hookPath, 'utf8');
     const startIdx = existing.indexOf(GitHookInstaller.HOOK_START);
     const endIdx = existing.indexOf(GitHookInstaller.HOOK_END);
-    if (startIdx === -1 || endIdx === -1) {
-      return { uninstalled: false, reason: 'marker_not_found', hookPath };
-    }
-
+    if (startIdx === -1 || endIdx === -1) return { uninstalled: false, reason: 'marker_not_found', hookPath };
     let before = existing.slice(0, startIdx);
     let after = existing.slice(endIdx + GitHookInstaller.HOOK_END.length);
-    // Clean up separator newline added before the block during install
-    if (before.endsWith('\n\n')) {
-      before = before.slice(0, -1);
-    }
-    if (after.startsWith('\n')) {
-      after = after.slice(1);
-    }
+    if (before.endsWith('\n\n')) before = before.slice(0, -1);
+    if (after.startsWith('\n')) after = after.slice(1);
     const remaining = before + after;
-
     if (remaining.trim() === '#!/bin/sh' || remaining.trim() === '') {
       fs.unlinkSync(hookPath);
       return { uninstalled: true, removedFile: true, hookPath };
     }
-
     AtomicFs.writeFileAtomic(hookPath, remaining);
-    try {
-      fs.chmodSync(hookPath, 0o755);
-    } catch {}
+    try { fs.chmodSync(hookPath, 0o755); } catch {}
     return { uninstalled: true, removedFile: false, hookPath };
   }
 
@@ -5440,20 +5740,13 @@ export class GitHookInstaller {
     const hooksDir = GitHookInstaller.resolveHooksDir(projectRoot);
     if (!hooksDir) return false;
     const hookPath = path.join(hooksDir, 'pre-commit');
-    if (!fs.existsSync(hookPath)) return false;
-    try {
-      return fs.readFileSync(hookPath, 'utf8').includes(GitHookInstaller.HOOK_START);
-    } catch {
-      return false;
-    }
+    try { return fs.existsSync(hookPath) && fs.readFileSync(hookPath, 'utf8').includes(GitHookInstaller.HOOK_START); } catch { return false; }
   }
 
   static installOneClickBundle(projectRoot, env = process.env) {
     const vicemPath = path.resolve(fileURLToPath(import.meta.url));
     const home = env.HOME || env.USERPROFILE || os.homedir();
     const hookRes = GitHookInstaller.install(projectRoot);
-
-    // 1. User-level CLI launcher (~/.local/bin/vicem or vicem.cmd) — no sudo required
     const localBin = path.join(home, '.local', 'bin');
     let binWrapperPath = null;
     try {
@@ -5467,8 +5760,6 @@ export class GitHookInstaller {
         fs.chmodSync(binWrapperPath, 0o755);
       }
     } catch {}
-
-    // 2. Non-destructive MCP config auto-registration for existing agent config dirs
     const mcpEntry = { command: 'node', args: [vicemPath, 'mcp'] };
     const mcpTargets = [
       { dir: path.join(home, '.cursor'), file: path.join(home, '.cursor', 'mcp.json') },
@@ -5485,26 +5776,20 @@ export class GitHookInstaller {
         registeredMcp.push(t.file);
       } catch {}
     }
-
     return { hookRes, binWrapperPath, registeredMcp };
   }
 }
 
-/**
- * Task 12.2 (Fix 12-B): Zero-Spawn `<50ms` Environment Diagnostics (`vicem doctor`)
- */
 export class DoctorDiagnostics {
   static findExecutableInPath(binName, env = process.env) {
-    const pathEnv = env.PATH || '';
-    const dirs = pathEnv.split(path.delimiter).filter(Boolean);
+    const dirs = (env.PATH || '').split(path.delimiter).filter(Boolean);
     const exts = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
     for (const dir of dirs) {
       for (const ext of exts) {
         const candidate = path.join(dir, binName + ext);
         try {
           fs.accessSync(candidate, fs.constants.X_OK);
-          const stat = fs.statSync(candidate);
-          if (stat.isFile()) return candidate;
+          if (fs.statSync(candidate).isFile()) return candidate;
         } catch {}
       }
     }
@@ -5616,7 +5901,7 @@ export class DoctorDiagnostics {
 }
 
 export class VicemApp {
-  static HELP_TEXT = `Vicem (v1.1.6) — Zero-Dependency AI Agent Context Baton & Diet Suite
+  static HELP_TEXT = `Vicem (v1.2.0) — Zero-Dependency AI Agent Context Baton & Diet Suite
 
 Usage (Tier 1 — Daily Zero-Config Commands):
   vicem                   Auto-detect active session & pass baton to recommended target
