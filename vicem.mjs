@@ -5148,18 +5148,21 @@ export class McpServerAdapter {
         }
         if (uri === 'vicem://ledger/index') {
           const ledger = DietLedger.load(this.projectRoot);
-          const text = JSON.stringify({ batonId: ledger.batonId, symbols: ledger.entries.map(({ content, ...m }) => m) }, null, 2);
+          const rawText = JSON.stringify({ batonId: ledger.batonId, symbols: ledger.entries.map(({ content, ...m }) => m) }, null, 2);
+          const text = SecretRedactor.redact(rawText).sanitized;
           return { jsonrpc: '2.0', id, result: { contents: [{ uri, mimeType: 'application/json', text }] } };
         }
         if (uri === 'vicem://salience/report') {
           const p = path.join(this.projectRoot, '.vicem', 'baton.json');
-          const raw = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : {};
-          const text = JSON.stringify({
+          let raw = {};
+          try { if (fs.existsSync(p)) raw = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
+          const rawText = JSON.stringify({
             id: raw.id || null,
             salience: raw.salience || { scale: 'percentile_0_100', files: [], symbols: [] },
             failedAttempts: raw.task?.failedAttempts || [],
             constraints: raw.task?.constraints || [],
           }, null, 2);
+          const text = SecretRedactor.redact(rawText).sanitized;
           return { jsonrpc: '2.0', id, result: { contents: [{ uri, mimeType: 'application/json', text }] } };
         }
         return { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown resource URI: ${uri}` } };
@@ -5263,11 +5266,15 @@ export class McpServerAdapter {
                 if (!warn) {
                   warn = `// ⚠️ [STALENESS DRIFT WARNING]: '${filePath}' modified on disk since ledger snapshot.\n`;
                 }
+                const { ledger: liveDiskLedger } = CodeSkeletonizer.skeletonize(filePath, diskSanitized, { minLines: 1 });
                 const liveSnippets = [];
                 for (const entry of targetEntries) {
-                  const span = SmartPatchApplier.findUniqueSymbolSpanInFile(diskSanitized, entry.symbolName);
-                  if (span) {
-                    liveSnippets.push(diskSanitized.slice(span.startIdx, span.endIdx).trim());
+                  const liveCode = liveDiskLedger.getEntry(filePath, entry.symbolName);
+                  if (liveCode) {
+                    liveSnippets.push(liveCode.trim());
+                  } else {
+                    const span = SmartPatchApplier.findUniqueSymbolSpanInFile(diskSanitized, entry.symbolName);
+                    if (span) liveSnippets.push(diskSanitized.slice(span.startIdx, span.endIdx).trim());
                   }
                 }
                 if (liveSnippets.length > 0) {
@@ -5800,75 +5807,23 @@ export class DoctorDiagnostics {
     const startMs = performance.now();
     const home = env.HOME || os.homedir();
     const agents = [
-      {
-        id: 'claude',
-        label: 'Claude Code',
-        bin: 'claude',
-        sessionDir: path.join(env.CLAUDE_CONFIG_DIR || path.join(home, '.claude'), 'projects'),
-      },
-      {
-        id: 'codex',
-        label: 'OpenAI Codex',
-        bin: 'codex',
-        sessionDir: path.join(env.CODEX_HOME || path.join(home, '.codex'), 'sessions'),
-      },
-      {
-        id: 'gemini',
-        label: 'Gemini CLI',
-        bin: 'gemini',
-        sessionDir: path.join(env.GEMINI_CLI_HOME || path.join(home, '.gemini'), 'tmp'),
-      },
-      {
-        id: 'antigravity',
-        label: 'Antigravity IDE',
-        bin: 'agy',
-        sessionDir: path.join(home, '.gemini', 'antigravity', 'brain'),
-      },
-      {
-        id: 'cursor',
-        label: 'Cursor IDE',
-        bin: 'cursor',
-        sessionDir: new CursorHarvester(projectRoot, env).getWorkspaceStorageDir(),
-      },
-      {
-        id: 'vscode',
-        label: 'VS Code Copilot',
-        bin: 'code',
-        sessionDir: new VSCodeCopilotHarvester(projectRoot, env).getWorkspaceStorageDir(),
-      },
-      {
-        id: 'opencode',
-        label: 'OpenCode CLI',
-        bin: 'opencode',
-        sessionDir: new OpenCodeHarvester(projectRoot, env).getDbPath(),
-      },
-      {
-        id: 'aider',
-        label: 'Aider CLI',
-        bin: 'aider',
-        sessionDir: path.join(projectRoot, '.aider.chat.history.md'),
-      },
+      { id: 'claude', label: 'Claude Code', bin: 'claude', sessionDir: path.join(env.CLAUDE_CONFIG_DIR || path.join(home, '.claude'), 'projects') },
+      { id: 'codex', label: 'OpenAI Codex', bin: 'codex', sessionDir: path.join(env.CODEX_HOME || path.join(home, '.codex'), 'sessions') },
+      { id: 'gemini', label: 'Gemini CLI', bin: 'gemini', sessionDir: path.join(env.GEMINI_CLI_HOME || path.join(home, '.gemini'), 'tmp') },
+      { id: 'antigravity', label: 'Antigravity IDE', bin: 'agy', sessionDir: path.join(home, '.gemini', 'antigravity', 'brain') },
+      { id: 'cursor', label: 'Cursor IDE', bin: 'cursor', sessionDir: new CursorHarvester(projectRoot, env).getWorkspaceStorageDir() },
+      { id: 'vscode', label: 'VS Code Copilot', bin: 'code', sessionDir: new VSCodeCopilotHarvester(projectRoot, env).getWorkspaceStorageDir() },
+      { id: 'opencode', label: 'OpenCode CLI', bin: 'opencode', sessionDir: new OpenCodeHarvester(projectRoot, env).getDbPath() },
+      { id: 'aider', label: 'Aider CLI', bin: 'aider', sessionDir: path.join(projectRoot, '.aider.chat.history.md') },
     ];
-
     const agentChecks = agents.map((a) => {
       const binPath = DoctorDiagnostics.findExecutableInPath(a.bin, env);
-      const hasStorage = fs.existsSync(a.sessionDir);
-      return {
-        ...a,
-        binFound: Boolean(binPath),
-        binPath,
-        hasStorage,
-      };
+      return { ...a, binFound: Boolean(binPath), binPath, hasStorage: fs.existsSync(a.sessionDir) };
     });
-
-    const sqliteSupported = Boolean(process.getBuiltinModule?.('node:sqlite'));
-    const hookInstalled = GitHookInstaller.isInstalled(projectRoot);
-    const elapsedMs = Number((performance.now() - startMs).toFixed(2));
-
     return {
-      elapsedMs,
-      sqliteSupported,
-      hookInstalled,
+      elapsedMs: Number((performance.now() - startMs).toFixed(2)),
+      sqliteSupported: Boolean(process.getBuiltinModule?.('node:sqlite')),
+      hookInstalled: GitHookInstaller.isInstalled(projectRoot),
       agentChecks,
     };
   }

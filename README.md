@@ -9,6 +9,7 @@
 # Vicem — Diet the Context, Pass the Baton
 
 <p align="left">
+  <a href="https://hol.org/guard/extensions/mcp.vicem"><img src="https://img.shields.io/badge/HOL_Guard%20|%20Vicem_Context_Baton_MCP-2E5AAC?logo=shield&logoColor=white" alt="Reviewed by HOL Guard" /></a>
   <a href="https://glama.ai/mcp/servers/RAKKUNN/vicem"><img src="https://glama.ai/mcp/servers/RAKKUNN/vicem/badges/score.svg" alt="Vicem MCP server rated A on Glama" /></a>
   <a href="https://mcpservers.org/servers/rakkunn/vicem"><img src="https://mcpservers.org/badge.svg" alt="Listed on mcpservers.org" /></a>
   <a href="https://www.npmjs.com/package/vicem-cli"><img src="https://img.shields.io/npm/v/vicem-cli?color=CB3837&label=npm%20(vicem-cli)" alt="npm vicem-cli" /></a>
