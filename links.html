@@ -116,6 +116,37 @@
       transform: translateY(-1px);
     }
 
+    .inapp-banner {
+      display: none;
+      background: rgba(210, 161, 63, 0.14);
+      border: 1px solid var(--gold);
+      border-radius: 14px;
+      padding: 10px 13px;
+      font-size: 12px;
+      line-height: 1.42;
+      color: var(--text);
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .inapp-banner.visible {
+      display: flex;
+    }
+
+    .inapp-action {
+      background: var(--gold);
+      color: #1F1A17;
+      border: none;
+      border-radius: 999px;
+      padding: 6px 11px;
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
     /* Hero Lockup (matches 9:16 Godot end-card) */
     .hero {
       text-align: center;
@@ -411,12 +442,27 @@
         <button class="util-btn" id="langBtn" type="button" aria-label="Toggle Language">
           🌐 <span id="langLabel">한국어</span>
         </button>
+        <button class="util-btn" id="shareBtn" type="button" aria-label="Share or Send to PC">
+          📤 <span data-lang="en">Send to PC</span><span data-lang="ko">PC로 공유</span>
+        </button>
       </div>
       <div class="pill-group">
         <button class="util-btn" id="themeBtn" type="button" aria-label="Toggle Theme">
           ✨ <span id="themeLabel">Dark Mode</span>
         </button>
       </div>
+    </div>
+
+    <!-- In-App Browser Helper Banner (Auto-shown on Instagram/FB WebView) -->
+    <div class="inapp-banner" id="inappBanner" role="status">
+      <div>
+        <span data-lang="en">📱 <strong>In-App Browser:</strong> Tap <strong>⋯ → Open in external browser</strong> or send link to your PC to ★ Star on GitHub.</span>
+        <span data-lang="ko">📱 <strong>인앱 브라우저 안내:</strong> 우측 상단 <strong>⋯ → 외부 브라우저로 열기</strong> 또는 PC로 링크를 보내면 GitHub ★ Star와 설치가 바로 가능합니다.</span>
+      </div>
+      <button class="inapp-action" id="inappShareBtn" type="button">
+        <span data-lang="en">Share Link</span>
+        <span data-lang="ko">링크 보내기</span>
+      </button>
     </div>
 
     <!-- Brand Lockup -->
@@ -548,7 +594,7 @@
         <span class="link-arrow">→</span>
       </a>
 
-      <a class="link-card" href="https://github.com/RAKKUNN/vicem/blob/master/SECURITY.md" target="_blank" rel="noopener noreferrer">
+      <a class="link-card" href="https://github.com/RAKKUNN/vicem/blob/main/SECURITY.md" target="_blank" rel="noopener noreferrer">
         <div class="link-icon">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
         </div>
@@ -621,6 +667,38 @@
           copyBtn.innerHTML = '<span data-lang="en">Copy</span><span data-lang="ko">복사</span>';
         }, 1400);
       });
+
+      const shareBtn = document.getElementById('shareBtn');
+      const inappBanner = document.getElementById('inappBanner');
+      const inappShareBtn = document.getElementById('inappShareBtn');
+      const repoUrl = 'https://github.com/RAKKUNN/vicem';
+
+      if (/Instagram|FBAN|FBAV|KAKAOTALK|Line\//i.test(navigator.userAgent || '')) {
+        inappBanner.classList.add('visible');
+      }
+
+      function shareOrCopyRepo(btnEl) {
+        const isKo = html.getAttribute('lang') === 'ko';
+        if (navigator.share) {
+          navigator.share({
+            title: 'Vicem v1.2.0 — AI Agent Context Baton & Diet Suite',
+            text: isKo
+              ? 'AI 코딩 세션 80~99% 압축 & 에이전트 간 3초 바통 터치 (npx -y vicem-cli gui)'
+              : 'Compact AI coding context by 80–99% & hand off across agents in 3s (npx -y vicem-cli gui)',
+            url: repoUrl
+          }).catch(function () {});
+          return;
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(repoUrl);
+        }
+        const prevHtml = btnEl.innerHTML;
+        btnEl.textContent = isKo ? 'GitHub 주소 복사됨 ✓' : 'GitHub URL Copied ✓';
+        setTimeout(function () { btnEl.innerHTML = prevHtml; }, 1600);
+      }
+
+      shareBtn.addEventListener('click', function () { shareOrCopyRepo(shareBtn); });
+      inappShareBtn.addEventListener('click', function () { shareOrCopyRepo(inappShareBtn); });
     })();
   </script>
 </body>
