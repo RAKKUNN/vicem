@@ -8,6 +8,11 @@ import { fileURLToPath } from 'node:url';
 import {
   AtomicFs,
   CodeSkeletonizer,
+  ContextSalienceEngine,
+  ContextFileRanker,
+  DeterministicTaskExtractor,
+  BatonIaBuilder,
+  McpServerAdapter,
   SmartPatchApplier,
   WebLandAdapter,
   encodeClaudeProjectDir,
@@ -228,3 +233,166 @@ test('Phase 12.5 - CRIT-05 & CRIT-06: CodeSkeletonizer handles `return /a{1,2}/`
     'Browser index.html must skeletonize >=12 line Python functions at L2'
   );
 });
+
+test('Phase 13 (v1.2.0): 0-100% Context Salience Percentile Engine, Failed Attempts extraction, 1-Hop Call-Graph Indexing, Live Disk Rehydration, and MCP Resources', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vicem-v120-'));
+  try {
+    // 1. Verify ContextSalienceEngine 0..1 score -> 0..100% percentile evaluation
+    const highSal = ContextSalienceEngine.evaluate({ signalWeight: 95, validity: 1.0, recency: 1.0, tokens: 12 });
+    const zeroSal = ContextSalienceEngine.evaluate({ signalWeight: 90, validity: 0.0, recency: 1.0, tokens: 12 });
+    assert.ok(highSal.score > 0 && highSal.score <= 1, 'Salience score must be normalized in [0, 1]');
+    assert.equal(highSal.percentile, Math.round(highSal.score * 100), 'Percentile must equal 0..1 divided into 100');
+    assert.equal(ContextSalienceEngine.formatPercentile(highSal.score), `${highSal.percentile}%`);
+    assert.equal(zeroSal.score, 0);
+    assert.equal(zeroSal.percentile, 0);
+
+    // 2. Verify DeterministicTaskExtractor captures Hard Constraints (100%) and Reverted Failed Attempts (88%-95%)
+    const sessionEvents = [
+      {
+        role: 'user',
+        content: 'Fix token refresh race in src/auth.ts. Never add external npm dependencies.',
+      },
+      {
+        role: 'assistant',
+        tool_calls: [{ name: 'edit_file', input: { file_path: 'src/auth.ts' } }],
+      },
+      {
+        role: 'assistant',
+        tool_calls: [
+          {
+            name: 'bash',
+            input: { command: 'npm test -- auth' },
+            exitCode: 1,
+            output: 'TypeError: mutex lock deadlock in verifyToken',
+          },
+        ],
+      },
+      {
+        role: 'assistant',
+        tool_calls: [{ name: 'edit_file', input: { file_path: 'src/auth.ts' } }],
+      },
+      {
+        role: 'assistant',
+        tool_calls: [{ name: 'bash', input: { command: 'npm test -- auth' }, exitCode: 0, output: 'PASS' }],
+      },
+    ];
+    const extracted = DeterministicTaskExtractor.extract(sessionEvents, null);
+    assert.equal(extracted.constraints.length, 1);
+    assert.equal(extracted.constraints[0].percentile, 100);
+    assert.equal(extracted.failedAttempts.length, 1, 'Failed attempt followed by re-edit must survive in failedAttempts');
+    assert.equal(extracted.failedAttempts[0].percentile, 88);
+    assert.ok(extracted.failedAttempts[0].text.includes('REVERTED/AVOIDED'));
+
+    // 3. Create multi-function source file with 1-hop intra-file call graph (verifyToken -> decodeClaims)
+    const srcDir = path.join(tmpDir, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    const authPath = path.join(srcDir, 'auth.ts');
+    const authCode = [
+      'export function decodeClaims(raw: string): Record<string, string> {',
+      '  const parts = raw.split(".");',
+      '  const l1 = parts[0] || "";',
+      '  const l2 = parts[1] || "";',
+      '  const l3 = parts[2] || "";',
+      '  const l4 = l1.trim();',
+      '  const l5 = l2.trim();',
+      '  const l6 = l3.trim();',
+      '  const l7 = l4 + l5;',
+      '  const l8 = l6.length;',
+      '  const l9 = String(l8);',
+      '  return { sub: l7, len: l9 };',
+      '}',
+      '',
+      'export function verifyToken(token: string): boolean {',
+      '  const claims = decodeClaims(token);',
+      '  const a1 = claims.sub;',
+      '  const a2 = claims.len;',
+      '  const a3 = a1.length > 0;',
+      '  const a4 = a2 !== "0";',
+      '  const a5 = Boolean(a3 && a4);',
+      '  const a6 = token.startsWith("ey");',
+      '  const a7 = token.length > 10;',
+      '  const a8 = a5 && a6;',
+      '  const a9 = a8 && a7;',
+      '  return a9;',
+      '}',
+    ].join('\n');
+    fs.writeFileSync(authPath, authCode, 'utf8');
+
+    const baton = BatonIaBuilder.build({
+      projectRoot: tmpDir,
+      sourceAgent: 'claude',
+      targetAgent: 'codex',
+      taskContext: extracted,
+      gitContext: {
+        isGitRepo: true,
+        branch: 'feat/v1.2.0',
+        headCommit: '1234abc',
+        modifiedFiles: ['src/auth.ts'],
+        untrackedFiles: [],
+        diffSummary: '1 file changed',
+        diffPatch: '@@ -15,3 +15,3 @@\n+export function verifyToken(token: string): boolean {',
+      },
+      errorLog: 'Error at verifyToken (src/auth.ts:16:9)',
+    });
+
+    assert.ok(baton.markdown.includes('### Failed Attempts & Guardrails (Do Not Retry)'));
+    assert.ok(baton.markdown.includes('[100% | CONSTRAINT]'));
+    assert.ok(baton.markdown.includes('[88% | REVERTED/AVOIDED]'));
+    assert.equal(baton.json.salience.scale, 'percentile_0_100');
+    assert.ok(baton.json.salience.files[0].percentile >= 80);
+
+    const verifyEntry = baton.ledger.getEntryObject('src/auth.ts', 'verifyToken');
+    const decodeEntry = baton.ledger.getEntryObject('src/auth.ts', 'decodeClaims');
+    assert.ok(verifyEntry.calls.includes('decodeClaims'), 'verifyToken must record 1-hop call to decodeClaims');
+    assert.ok(decodeEntry.calledBy.includes('verifyToken'), 'decodeClaims must record 1-hop calledBy from verifyToken');
+    assert.ok(verifyEntry.saliencePercentile > decodeEntry.saliencePercentile, 'Hot symbol in diff/error must have higher percentile');
+
+    // 4. Test MCP include_callees=true and Live Disk Rehydration + resources/list & resources/read
+    const mcp = new McpServerAdapter(tmpDir);
+    const resList = await mcp.handleRequest({ jsonrpc: '2.0', id: 1, method: 'resources/list' });
+    assert.equal(resList.result.resources.length, 3);
+
+    const salRes = await mcp.handleRequest({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'resources/read',
+      params: { uri: 'vicem://salience/report' },
+    });
+    const parsedReport = JSON.parse(salRes.result.contents[0].text);
+    assert.equal(parsedReport.salience.scale, 'percentile_0_100');
+
+    // Rehydrate verifyToken with include_callees=true -> returns both verifyToken AND decodeClaims in 1 call
+    const batchRehyd = await mcp.handleRequest({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: {
+        name: 'vicem_rehydrate',
+        arguments: { file_path: 'src/auth.ts', symbol_name: 'verifyToken', include_callees: true },
+      },
+    });
+    const batchText = batchRehyd.result.content[0].text;
+    assert.ok(batchText.includes('export function verifyToken'));
+    assert.ok(batchText.includes('export function decodeClaims'), 'include_callees=true must also restore 1-hop callee decodeClaims');
+
+    // Modify verifyToken on disk after baton creation -> verify Live Disk Implementation is extracted
+    const updatedAuthCode = authCode.replace('return a9;', 'return Boolean(a9 && token.length < 4096); // live disk fix');
+    fs.writeFileSync(authPath, updatedAuthCode, 'utf8');
+    const driftedRehyd = await mcp.handleRequest({
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: {
+        name: 'vicem_rehydrate',
+        arguments: { file_path: 'src/auth.ts', symbol_name: 'verifyToken' },
+      },
+    });
+    const driftedText = driftedRehyd.result.content[0].text;
+    assert.ok(driftedText.includes('[STALENESS DRIFT WARNING]'));
+    assert.ok(driftedText.includes('[LIVE DISK IMPLEMENTATION (Updated Since Baton Snapshot)]'));
+    assert.ok(driftedText.includes('token.length < 4096'));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+

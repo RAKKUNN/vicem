@@ -1151,6 +1151,10 @@ export function collectLiveSkeletonLedger(projectRoot, activeFiles, persistToDis
           endLine: e.endLine,
           lines: Math.max(1, e.endLine - e.startLine + 1),
           tokens: TokenEstimator.estimate(e.content),
+          salienceScore: e.salienceScore ?? 0.5,
+          saliencePercentile: e.saliencePercentile ?? 50,
+          calls: e.calls || [],
+          calledBy: e.calledBy || [],
         })),
       });
     } catch {}
@@ -3542,7 +3546,7 @@ export const HTML_PAGE = `<!DOCTYPE html>
         </div>
         <div class="brand-name-wrap">
           <span class="brand-name">Vicem</span>
-          <span class="brand-ver">v1.1.6</span>
+          <span class="brand-ver">v1.2.0</span>
         </div>
         <div class="ws-switcher-bar" id="ws-tabs"></div>
         <button class="add-ws-btn" id="btn-add-ws" onclick="toggleAddWorkspacePopover(event)" title="Open or add any project directory">
