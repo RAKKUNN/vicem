@@ -11,6 +11,7 @@
 <p align="left">
   <a href="https://hol.org/guard/extensions/mcp.vicem"><img src="https://img.shields.io/badge/HOL_Guard%20|%20Vicem_Context_Baton_MCP-2E5AAC?logo=shield&logoColor=white" alt="Reviewed by HOL Guard" /></a>
   <a href="https://glama.ai/mcp/servers/RAKKUNN/vicem"><img src="https://glama.ai/mcp/servers/RAKKUNN/vicem/badges/score.svg" alt="Vicem MCP server rated A on Glama" /></a>
+  <a href="https://mcp.so/servers/vicem"><img src="https://img.shields.io/badge/MCP.so-Listed-0F172A?logo=modelcontextprotocol&logoColor=white" alt="Listed on MCP.so" /></a>
   <a href="https://mcpservers.org/servers/rakkunn/vicem"><img src="https://mcpservers.org/badge.svg" alt="Listed on mcpservers.org" /></a>
   <a href="https://www.npmjs.com/package/vicem-cli"><img src="https://img.shields.io/npm/v/vicem-cli?color=CB3837&label=npm%20(vicem-cli)" alt="npm vicem-cli" /></a>
   <a href="https://github.com/RAKKUNN/vicem/releases/tag/v1.2.0"><img src="https://img.shields.io/badge/release-v1.2.0-10B981" alt="Release v1.2.0" /></a>
