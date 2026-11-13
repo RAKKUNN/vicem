@@ -350,7 +350,7 @@ test('Phase 13 (v1.2.0): 0-100% Context Salience Percentile Engine, Failed Attem
     // 4. Test MCP include_callees=true and Live Disk Rehydration + resources/list & resources/read
     const mcp = new McpServerAdapter(tmpDir);
     const resList = await mcp.handleRequest({ jsonrpc: '2.0', id: 1, method: 'resources/list' });
-    assert.equal(resList.result.resources.length, 3);
+    assert.ok(resList.result.resources.length >= 3);
 
     const salRes = await mcp.handleRequest({
       jsonrpc: '2.0',

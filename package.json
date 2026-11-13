@@ -1,6 +1,6 @@
 {
   "name": "@rakkunn/vicem",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Zero-Dependency, Zero-Network AI Agent Context Baton & Diet Suite (CLI + MCP Server + Web Studio)",
   "type": "module",
   "main": "./vicem.mjs",
@@ -23,7 +23,9 @@
     "SECURITY.md",
     "SHA256SUMS",
     "scripts/compat-smoke.mjs",
-    "docs/COMPATIBILITY.md"
+    "scripts/bench.mjs",
+    "docs/COMPATIBILITY.md",
+    "docs/BENCHMARK.md"
   ],
   "homepage": "https://rakkunn.github.io/vicem/",
   "repository": {
@@ -32,11 +34,13 @@
   },
   "author": "Rakkunn",
   "scripts": {
-    "build": "node --check ./vicem.mjs && node --check ./vicem-gui.mjs",
+    "build": "node --check ./vicem.mjs && node --check ./vicem-gui.mjs && node --check ./scripts/bench.mjs",
     "start": "node ./vicem.mjs mcp-server",
     "test": "node --test --test-timeout=60000 test/*.test.mjs",
+    "bench": "node ./scripts/bench.mjs",
     "doctor": "node ./vicem.mjs doctor",
     "guard": "node ./vicem.mjs guard",
+    "stats": "node ./vicem.mjs stats",
     "test:compat": "node scripts/compat-smoke.mjs ."
   },
   "engines": {

@@ -14,14 +14,14 @@
   <a href="https://mcp.so/servers/vicem"><img src="https://img.shields.io/badge/MCP.so-Listed-0F172A?logo=modelcontextprotocol&logoColor=white" alt="Listed on MCP.so" /></a>
   <a href="https://mcpservers.org/servers/rakkunn/vicem"><img src="https://mcpservers.org/badge.svg" alt="Listed on mcpservers.org" /></a>
   <a href="https://www.npmjs.com/package/vicem-cli"><img src="https://img.shields.io/npm/v/vicem-cli?color=CB3837&label=npm%20(vicem-cli)" alt="npm vicem-cli" /></a>
-  <a href="https://github.com/RAKKUNN/vicem/releases/tag/v1.2.0"><img src="https://img.shields.io/badge/release-v1.2.0-10B981" alt="Release v1.2.0" /></a>
+  <a href="https://github.com/RAKKUNN/vicem/releases/tag/v1.3.0"><img src="https://img.shields.io/badge/release-v1.3.0-10B981" alt="Release v1.3.0" /></a>
   <img src="https://img.shields.io/badge/dependencies-0-3B82F6" alt="Zero Dependencies" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-F59E0B" alt="MIT License" /></a>
 </p>
 
 > **Hit Claude Code's 5-hour quota mid-feature? Or watching Cursor / Codex slow to a crawl after 150k tokens of context rot?**
 >
-> **Vicem** compacts your active coding session by **80–99%** (via deterministic AST code skeletonization + lossless MCP on-demand rehydration) and hands off a clean `.vicem/BATON.md` across **Claude Code, Cursor, Codex CLI, Gemini CLI, Windsurf, Antigravity IDE, and Web AI** in 3 seconds — with **`0` npm dependencies** and **`0` network calls**.
+> **Vicem** compacts your active coding session by **80–92% net effective tokens** ([Measured Eval](./docs/BENCHMARK.md) — via deterministic AST code skeletonization with `[pure]` / `[effects: ...]` tags + SHA-256-checked, secret-redacted MCP rehydration) and hands off a hardened `.vicem/BATON.md` across **Claude Code, Cursor, Codex CLI, Gemini CLI, Windsurf, Antigravity IDE, and Web AI** in 3 seconds — with **`0` npm dependencies** and **`0` network calls**.
 >
 > ⭐ **Tip:** Click **Star** (top-right) to bookmark this repo for the next time your coding agent hits a 5-hour quota limit or context rot.
 
@@ -83,6 +83,7 @@ Add to `~/.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`, or `claude_d
 <p align="left">
   <a href="https://rakkunn.github.io/vicem/"><strong>🌐 Try Zero-Install Browser Sandbox (GitHub Pages)</strong></a> ·
   <a href="https://www.npmjs.com/package/vicem-cli"><strong>📦 npm (vicem-cli / @rakkunn/vicem)</strong></a> ·
+  <a href="./docs/BENCHMARK.md"><strong>📊 Cache Hit Rate &amp; Break-Even Eval</strong></a> ·
   <a href="./SECURITY.md"><strong>🔒 Security &amp; Zero-Network Proof</strong></a>
 </p>
 
@@ -117,25 +118,43 @@ $ npx -y vicem-cli codex
 
 ---
 
-## How Lossless Code Skeletonization + MCP Rehydration Works
+## How Side-Effect-Tagged AST Skeletonization + MCP Rehydration Works
 
-Instead of lossy LLM summarization that forgets exact type contracts, Vicem keeps all imports, types, and signatures 100% intact inside `.vicem/BATON.md` while collapsing unchanged function bodies `>= 12` lines into `.vicem/ledger.json`:
+Instead of lossy LLM summarization that forgets exact type contracts or hides side effects, Vicem keeps all imports, types, and signatures intact inside `.vicem/BATON.md`, annotates every elided body with **deterministic AST purity & side-effect tags** (`[pure]` vs `[effects: fs-write, proc, net, state, fs-read, throws, async]` with 1-hop intra-file propagation), and indexes raw bodies in `.vicem/ledger.json`:
 
 ```ts
-// What the receiving agent sees in .vicem/BATON.md (-85% tokens, disk file untouched):
+// What the receiving agent sees in .vicem/BATON.md (disk file untouched):
 export interface JwtPayload { sub: string; exp: number; role: 'admin' | 'user'; }
-export async function verifySessionToken(rawToken: string, secret: string): Promise<JwtPayload> { /* ... */ }
+export function normalizeBearerHeader(rawHeader: string): string { /* ... [pure] */ }
+export async function verifySessionToken(rawToken: string, secret: string): Promise<JwtPayload> { /* ... [effects: fs-read, throws, async] */ }
 ```
 
-When the receiving agent actually needs to edit `verifySessionToken`, it calls the MCP tool **`vicem_rehydrate("src/auth.ts", "verifySessionToken")`** to pull back the exact raw lines on demand (with automatic git HEAD and live-file SHA-256 staleness detection).
+When the receiving agent actually needs to edit `verifySessionToken`, it calls the MCP tool **`vicem_rehydrate("src/auth.ts", "verifySessionToken")`** (optionally with `include_callees: true`) for SHA-256-checked, secret-redacted AST rehydration on demand — while `.vicem/metrics.json` (`vicem stats`) tracks your live **Skeleton Cache Hit Rate (`CHR`)** and **Net Token Reduction (`NTR`)** ([see full benchmark & break-even curve](./docs/BENCHMARK.md)).
 
-| Pipeline Stage | Before Vicem (Raw Session) | After Vicem Baton & Diet | Token Savings |
+| Pipeline Stage | Before Vicem (Raw Session) | After Vicem Baton & Diet (v1.3.0) | Measured Impact |
 | :--- | :--- | :--- | :--- |
-| **1. Session Handoff** | 40+ turns of raw JSONL / SQLite history locked in one tool | Extracts `Goal`, `Done`, `Immediate NEXT` & `git diff` into `.vicem/BATON.md` | **< 3s handoff** across 12+ CLI, IDE & Web AI agents |
-| **2. Code Skeletonizer** | Full source files with unchanged function bodies (`~120,000 tok`) | Signatures & types 100% intact; bodies indexed in `.vicem/ledger.json` | **-80% to -90% code tokens** (lossless via `vicem_rehydrate`) |
+| **1. Session Handoff** | 40+ turns of raw JSONL / SQLite history locked in one tool | Extracts `Goal`, `Done`, `Failed Attempts`, `Immediate NEXT` & `git diff` into `.vicem/BATON.md` | **< 3s handoff** across 12+ CLI, IDE & Web AI agents |
+| **2. Side-Effect AST Skeletonizer** | Full source files with unchanged function bodies (`~59,100 tok`) | Signatures + `[pure]` / `[effects: ...]` tags + 1-hop call graph; bodies in `.vicem/ledger.json` | **90–98% cache hit rate**, **-84% to -92% net tokens** ([eval](./docs/BENCHMARK.md)) |
 | **3. Test & Log Slimmer** | Verbose ANSI spinners & `node_modules` stack frames (`~45,000 tok`) | Failing assertion + top 5 user-code stack frames (`~1,200 tok`) | **-95% log noise** |
 | **4. Data & Noise Gate** | Lockfiles, build bundles, and huge JSON / CSV / SQL dumps | Lockfiles dropped; data files reduced to inferred schema + 2 sample rows | **-98% data bloat** |
-| **5. Safety & Secret Guard** | Plaintext `.env` keys in logs & risk of placeholder overwrites | Local secret redaction + `SkeletonWriteGuard` pre-commit protection | **0 leaked secrets** & **0 npm dependencies** |
+| **5. 4-Pillar Safety & Injection Guard** | Plaintext `.env` keys, skeleton stub writes, or indirect prompt-injection in logs | Regex + Shannon-entropy secret scrubbing, `BatonInjectionGuard` (Unicode Trojan / fence-escape / hijack defanging) & `SkeletonWriteGuard` | **4-layer defense** & **`0` npm dependencies** |
+
+### Architectural Benchmark vs. Existing Context Packers
+
+Measured on Apple M2 Pro (`darwin-arm64`, Node `v25.9.0`, `/usr/bin/time -l` median of 5 runs, OpenAI `o200k_base` BPE tokenizer) on a polyglot JS/TS/Python/JSON repository (`87,460` total tokens / `70,682` code-only tokens, containing an inline test secret and an untrusted prompt-injection comment):
+
+| Tool / Architecture Category | Install Footprint (Deps) | Median Time | Peak RSS | Output (`o200k_base`) | Reduction | Reversible Bodies (`rehydrate`) | Secret / Injection Defense |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Vicem v1.3.0 (`diet` — Task Baton + Hot-Expand)** | **0.47 MB (`0`)** | **133 ms** | **55 MB** | **1,051 tok** | **-98.8%** | **Yes (active fn inline, 0 RPC)** | **Redacted / Defanged** |
+| **Vicem v1.3.0 (`vicem map` — Whole-Repo Map)** | **0.47 MB (`0`)** | **161 ms** | **77 MB** | **8,678 tok** | **-90.1%** | **Yes (221 symbols via MCP)** | **Redacted / Defanged** |
+| **Vicem v1.3.0 (`--compact-all` Full Baton)** | **0.47 MB (`0`)** | **219 ms** | **77 MB** | **9,721 tok** | **-88.9%** | **Yes (221 symbols via MCP)** | **Redacted / Defanged** |
+| Tree-sitter WASM Repo Packer (`--compress`, Full) | ~102 MB (`84`) | 333 ms | 208 MB | 18,587 tok | -78.7% | No (one-way deletion) | Secrets only / Injection leaked |
+| Tree-sitter WASM Repo Packer (`--compress`, Code-Only) | ~102 MB (`84`) | 331 ms | 207 MB | 9,844 tok | -86.1%* | No (one-way deletion) | Secrets only / Injection leaked |
+| Standard XML Repo Packer (Default) | ~102 MB (`84`) | 274 ms | 164 MB | 79,934 tok | -8.6% | Full raw dump | Leaked / Leaked |
+| Python Repo Ingestor | ~25 MB | 419 ms | 145 MB | 79,650 tok | -8.9% | Full raw dump | Leaked / Leaked |
+| Raw File Concatenator | ~0.2 MB | 36 ms | 18 MB | 87,537 tok | 0% | Full raw dump | Leaked / Leaked |
+
+<sub>*Code-only comparison (`70,682` raw code tokens, excluding JSON fixtures): `vicem map` produces **8,583 tok (-87.9%)** in **160 ms** while keeping all 221 elided functions restorable on demand via `vicem_rehydrate`. See [`docs/BENCHMARK.md`](./docs/BENCHMARK.md) for the reproducible `CHR`/`NTR` evaluation and break-even curve.</sub>
 
 ---
 
@@ -157,8 +176,15 @@ vicem back
 # 5. Extract & smart-patch code blocks from a Web AI clipboard reply
 vicem land
 
-# 6. Run <50ms environment & agent storage diagnostics
+# 6. Build reversible whole-repo map, pin architectural decisions & install Claude lifecycle hooks
+vicem map
+vicem decide "Keep zero npm dependencies and preserve backward-compatible API"
+vicem init --agent-hooks
+
+# 7. Inspect Skeleton Cache Hit Rate (CHR), Net Token Savings (NTR) & run diagnostics
+vicem stats
 vicem doctor
+npm run bench
 ```
 
 <details>
@@ -184,7 +210,7 @@ node -e "console.log(JSON.parse(fs.readFileSync('package.json')).dependencies ??
 # 2. Verify SHA-256 checksums of all core artifacts
 shasum -a 256 -c SHA256SUMS
 
-# 3. Run the 769-test automated suite
+# 3. Run the 775-test automated suite
 node --test test/*.test.mjs
 ```
 
